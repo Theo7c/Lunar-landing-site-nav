@@ -1,11 +1,15 @@
 import os
 import uuid
+import warnings
 import requests
 import numpy as np
 import pandas as pd
 import rasterio
+from rasterio.errors import NotGeoreferencedWarning
 from rasterio.warp import transform
 from rasterio.windows import Window
+
+warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
 
 R_MOON_KM = 1737.4
 R_MOON_M = 1_737_400.0
@@ -187,3 +191,21 @@ def inspect_and_save_point(
             "reason": f"Read-only filesystem ({exc}); returned row without disk write.",
             "site": row_dict,
         }
+
+
+def main(lat: float, lon: float, dedup_radius_km: float = 0.15) -> list:
+    """
+    Inspects (lat, lon), saves the new site to processed_data/user_inspected_sites.csv
+    (unless already covered within dedup_radius_km), and returns the 12-column row
+    as a Python list ordered by CSV_COLUMNS. Returns [] if no valid DEM data exists.
+    """
+    result = inspect_and_save_point(lat=lat, lon=lon, dedup_radius_km=dedup_radius_km)
+    site = result.get("site")
+    if not site:
+        return []
+    return [site[col] for col in CSV_COLUMNS]
+
+
+if __name__ == "__main__":
+    row_list = main(lat=-78.4521, lon=-130.4890)
+    print(row_list)
