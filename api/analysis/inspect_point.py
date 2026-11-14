@@ -18,6 +18,7 @@ R_MOON_M = 1_737_400.0
 HORIZON_MAX_DIST_M = 80_000.0
 
 BASE_SITES_CSV = "processed_data/landing_sites.csv"
+BASE_HORIZONS_CSV = "processed_data/landing_site_horizons.csv"
 CUSTOM_SITES_CSV = "processed_data/user_inspected_sites.csv"
 CUSTOM_HORIZONS_CSV = "processed_data/user_horizon_profiles.csv"
 
@@ -48,6 +49,7 @@ GDAL_CURL_ENV = {
 
 _OPEN_DATASETS: dict[str, rasterio.DatasetReader] = {}
 _CACHED_BASE_SITES: tuple[pd.DataFrame, np.ndarray] | None = None
+_CACHED_BASE_HORIZONS: dict[str, list[float]] | None = None
 _GDAL_ENV = rasterio.Env(**GDAL_CURL_ENV)
 _GDAL_ENV.__enter__()
 
@@ -158,8 +160,39 @@ def _find_nearby_existing_site(x_km: float, y_km: float, z_km: float, radius_km:
     return None
 
 
+def _find_existing_horizon(site_id: str) -> list[float] | None:
+    """Check cached base horizons and user_horizon_profiles.csv for `site_id`."""
+    global _CACHED_BASE_HORIZONS
+    if not site_id:
+        return None
+
+    # 1. Check precomputed grid horizons (cached in memory on first lookup)
+    if _CACHED_BASE_HORIZONS is None and os.path.exists(BASE_HORIZONS_CSV):
+        hdf = pd.read_csv(BASE_HORIZONS_CSV)
+        if not hdf.empty and "site_id" in hdf.columns:
+            vals = hdf[AZIMUTH_COLS].to_numpy(dtype=float)
+            _CACHED_BASE_HORIZONS = {
+                str(sid): [round(float(v), 2) for v in row]
+                for sid, row in zip(hdf["site_id"], vals)
+            }
+
+    if _CACHED_BASE_HORIZONS is not None and site_id in _CACHED_BASE_HORIZONS:
+        return _CACHED_BASE_HORIZONS[site_id]
+
+    # 2. Check custom user-inspected horizons CSV
+    if os.path.exists(CUSTOM_HORIZONS_CSV):
+        uhdf = pd.read_csv(CUSTOM_HORIZONS_CSV)
+        if not uhdf.empty and "site_id" in uhdf.columns:
+            match = uhdf[uhdf["site_id"] == site_id]
+            if not match.empty:
+                row_vals = match.iloc[-1][AZIMUTH_COLS].to_numpy(dtype=float)
+                return [round(float(v), 2) for v in row_vals]
+
+    return None
+
+
 # ==============================================================================
-# FUNCTION 1: FAST TERRAIN PATCH INSPECTION (~2-10 ms)
+# FUNCTION 1: FAST TERRAIN PATCH INSPECTION
 # ==============================================================================
 def inspect_site_terrain(
     lat: float,
@@ -168,11 +201,20 @@ def inspect_site_terrain(
     save: bool = True,
 ) -> list:
     """
-    Fast inspection of a lunar coordinate's touchdown patch (3x3 or 7x7 pixels).
-    Saves to processed_data/user_inspected_sites.csv and returns the 12-element
-    site row list ordered by CSV_COLUMNS (or [] if invalid/nodata).
+    Checks existing landing_sites.csv and user_inspected_sites.csv first.
+    If not found within `dedup_radius_km`, extracts the touchdown patch from the DEM,
+    saves to processed_data/user_inspected_sites.csv, and returns the 12-element
+    site row list ordered by CSV_COLUMNS.
     """
     lon = normalize_lon(lon)
+    x_km, y_km, z_km = latlon_to_xyz(lat, lon)
+
+    # 1. Check existing CSV datasets BEFORE opening/reading any DEM raster
+    existing = _find_nearby_existing_site(x_km, y_km, z_km, dedup_radius_km)
+    if existing is not None:
+        return [existing[col_name] for col_name in CSV_COLUMNS]
+
+    # 2. Not in CSVs -> compute from DEM
     is_south_pole = lat <= -80.0
     tier = "south_pole" if is_south_pole else "global"
     src, _ = get_dataset(SP_SOURCES if is_south_pole else GLOBAL_SOURCES)
@@ -203,11 +245,6 @@ def inspect_site_terrain(
 
     if np.isnan(elevation_m) or np.isnan(max_slope_deg):
         return []
-
-    x_km, y_km, z_km = latlon_to_xyz(lat, lon)
-    existing = _find_nearby_existing_site(x_km, y_km, z_km, dedup_radius_km)
-    if existing is not None:
-        return [existing[col_name] for col_name in CSV_COLUMNS]
 
     new_site_id = f"USER_{uuid.uuid4().hex[:6].upper()}"
     row_dict = {
@@ -245,14 +282,31 @@ def inspect_site_horizon(
     lat: float,
     lon: float,
     site_id: str | None = None,
+    dedup_radius_km: float = 0.15,
     save: bool = True,
 ) -> list[float]:
     """
-    Compute the 360-degree horizon elevation profile (degrees, 0 to 359 deg) out to
-    80 km around (lat, lon). Optionally saves [site_id, az_000..az_359] to
-    processed_data/user_horizon_profiles.csv and returns the 360-element list.
+    Checks landing_site_horizons.csv and user_horizon_profiles.csv first.
+    If not already saved, computes the 360-degree horizon elevation profile out to
+    80 km around (lat, lon), appends to user_horizon_profiles.csv, and returns the
+    360-element list.
     """
     lon = normalize_lon(lon)
+
+    # 1. Resolve site_id from existing sites if not explicitly provided, then check horizon CSVs
+    resolved_site_id = site_id
+    if resolved_site_id is None:
+        x_km, y_km, z_km = latlon_to_xyz(lat, lon)
+        existing = _find_nearby_existing_site(x_km, y_km, z_km, dedup_radius_km)
+        if existing is not None:
+            resolved_site_id = str(existing["site_id"])
+
+    if resolved_site_id is not None:
+        cached_horizon = _find_existing_horizon(resolved_site_id)
+        if cached_horizon is not None:
+            return cached_horizon
+
+    # 2. Not in horizon CSVs -> compute from +/- 80 km DEM window
     is_south_pole = lat <= -80.0
     src, _ = get_dataset(SP_SOURCES if is_south_pole else GLOBAL_SOURCES)
 
@@ -313,7 +367,6 @@ def inspect_site_horizon(
         sample_r = global_r - r0
         sample_c = global_c - c0
 
-    # prefilter=False avoids allocating a 32 MB float64 copy of dem_win for order=1 bilinear lookup
     z1 = map_coordinates(
         dem_win,
         [sample_r, sample_c],
@@ -333,11 +386,11 @@ def inspect_site_horizon(
 
     horizon_list = [round(float(val), 2) for val in horizon_deg]
 
-    if save and site_id:
+    if save and resolved_site_id:
         try:
             os.makedirs(os.path.dirname(CUSTOM_HORIZONS_CSV) or ".", exist_ok=True)
             file_exists = os.path.exists(CUSTOM_HORIZONS_CSV)
-            pd.DataFrame([[site_id] + horizon_list], columns=HORIZON_CSV_COLUMNS).to_csv(
+            pd.DataFrame([[resolved_site_id] + horizon_list], columns=HORIZON_CSV_COLUMNS).to_csv(
                 CUSTOM_HORIZONS_CSV, mode="a", header=not file_exists, index=False
             )
         except OSError:
@@ -357,5 +410,7 @@ def main(lat: float, lon: float, dedup_radius_km: float = 0.15) -> tuple[list, l
     site_row = inspect_site_terrain(lat=lat, lon=lon, dedup_radius_km=dedup_radius_km, save=True)
     if not site_row:
         return [], []
-    horizons = inspect_site_horizon(lat=lat, lon=lon, site_id=site_row[0], save=True)
+    horizons = inspect_site_horizon(
+        lat=lat, lon=lon, site_id=site_row[0], dedup_radius_km=dedup_radius_km, save=True
+    )
     return site_row, horizons
