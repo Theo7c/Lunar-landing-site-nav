@@ -23,7 +23,87 @@ def load_sites_and_ssis(
     return sites_df, ssis_df
 
 
-def solve_best_rover_route(
+def _evaluate_path(
+    path: list[int],
+    d0: np.ndarray,
+    dist_mat: np.ndarray,
+    cand_vi: np.ndarray,
+    r_max_km: float,
+    decay_rate: float,
+    return_to_lander: bool,
+) -> tuple[float, float]:
+    """Compute (total_score, total_distance_km) for an ordered sequence of candidate indices."""
+    if not path:
+        return 0.0, 0.0
+    cum_d = float(d0[path[0]])
+    score = float(cand_vi[path[0]]) / (1.0 + decay_rate * cum_d)
+    for k in range(1, len(path)):
+        cum_d += float(dist_mat[path[k - 1], path[k]])
+        score += float(cand_vi[path[k]]) / (1.0 + decay_rate * cum_d)
+    total_d = cum_d + (float(d0[path[-1]]) if return_to_lander else 0.0)
+    if total_d > r_max_km + 1e-9:
+        return -1.0, total_d
+    return score, total_d
+
+
+def _refine_path_2opt_and_insert(
+    path: list[int],
+    d0: np.ndarray,
+    dist_mat: np.ndarray,
+    cand_vi: np.ndarray,
+    r_max_km: float,
+    decay_rate: float,
+    return_to_lander: bool,
+) -> tuple[float, list[int]]:
+    """Shorten path via 2-opt swaps, then greedily insert unvisited SSIs within budget."""
+    m = len(cand_vi)
+    cur_path = list(path)
+    cur_score, _ = _evaluate_path(cur_path, d0, dist_mat, cand_vi, r_max_km, decay_rate, return_to_lander)
+    if cur_score < 0.0:
+        return 0.0, []
+
+    improved = True
+    while improved and len(cur_path) >= 3:
+        improved = False
+        n = len(cur_path)
+        for i in range(n - 1):
+            for j in range(i + 2, n + 1):
+                candidate = cur_path[:i] + cur_path[i:j][::-1] + cur_path[j:]
+                sc, _ = _evaluate_path(candidate, d0, dist_mat, cand_vi, r_max_km, decay_rate, return_to_lander)
+                if sc > cur_score + 1e-9:
+                    cur_path = candidate
+                    cur_score = sc
+                    improved = True
+
+    visited = set(cur_path)
+    while len(visited) < m:
+        best_gain = 0.0
+        best_new_path = None
+        best_new_score = cur_score
+        best_node = -1
+
+        for node in range(m):
+            if node in visited:
+                continue
+            for pos in range(len(cur_path) + 1):
+                candidate = cur_path[:pos] + [node] + cur_path[pos:]
+                sc, _ = _evaluate_path(candidate, d0, dist_mat, cand_vi, r_max_km, decay_rate, return_to_lander)
+                if sc > best_new_score + 1e-9:
+                    best_gain = sc - cur_score
+                    best_new_score = sc
+                    best_new_path = candidate
+                    best_node = node
+
+        if best_new_path is None or best_gain <= 0.0:
+            break
+        cur_path = best_new_path
+        cur_score = best_new_score
+        visited.add(best_node)
+
+    return cur_score, cur_path
+
+
+def solve_best_rover_route_with_path(
     site_xyz: np.ndarray,
     cand_xyz: np.ndarray,
     cand_vi: np.ndarray,
@@ -31,62 +111,53 @@ def solve_best_rover_route(
     decay_rate: float = 0.15,
     return_to_lander: bool = False,
     exact_limit: int = 12,
-    beam_width: int = 32,
-) -> tuple[float, int]:
+    beam_width: int = 96,
+) -> tuple[float, list[int]]:
     """
-    Find the route starting at site_xyz visiting a subset of candidate SSIs
-    that maximizes total distance-decayed weight without exceeding r_max_km.
-
-    Returns (best_raw_weight, visited_stop_count).
+    Solve for the maximum-weight rover traverse starting at `site_xyz` whose total
+    travel distance does not exceed `r_max_km`.
+    Returns (best_raw_weight, ordered_candidate_indices).
     """
     m = len(cand_vi)
     if m == 0 or r_max_km <= 0.0:
-        return 0.0, 0
+        return 0.0, []
 
-    # Distances from lander (node 0) to each candidate SSI
     d0 = np.linalg.norm(cand_xyz - site_xyz[None, :], axis=1)
     roundtrip_mult = 2.0 if return_to_lander else 1.0
 
-    # Fast path: single candidate SSI in range
     if m == 1:
         if d0[0] * roundtrip_mult <= r_max_km:
-            return float(cand_vi[0] / (1.0 + decay_rate * d0[0])), 1
-        return 0.0, 0
+            return float(cand_vi[0] / (1.0 + decay_rate * d0[0])), [0]
+        return 0.0, []
 
-    # Pairwise Euclidean distance matrix between candidate SSIs: shape (m, m)
     diff = cand_xyz[:, None, :] - cand_xyz[None, :, :]
     dist_mat = np.sqrt(np.einsum("ijk,ijk->ij", diff, diff))
 
-    # 1. Exact Bitmask DP for up to `exact_limit` SSIs
+    # 1. Exact Bitmask DP with parent backtracking (m <= exact_limit)
     if m <= exact_limit:
         n_states = 1 << m
-        # dp_dist[mask, last] = minimum cumulative path distance to reach `last` visiting `mask`
-        # dp_score[mask, last] = maximum cumulative decayed weight for that state
         dp_dist = np.full((n_states, m), np.inf, dtype=np.float64)
         dp_score = np.full((n_states, m), -1.0, dtype=np.float64)
+        parent = np.full((n_states, m), -1, dtype=np.int32)
 
         best_score = 0.0
-        best_stops = 0
+        best_state = (-1, -1)
 
         for i in range(m):
             leg = float(d0[i])
-            total_req = leg + (leg if return_to_lander else 0.0)
-            if total_req <= r_max_km:
+            if leg * roundtrip_mult <= r_max_km:
                 mask = 1 << i
                 sc = float(cand_vi[i] / (1.0 + decay_rate * leg))
                 dp_dist[mask, i] = leg
                 dp_score[mask, i] = sc
                 if sc > best_score:
                     best_score = sc
-                    best_stops = 1
+                    best_state = (mask, i)
 
         for mask in range(1, n_states):
-            # Skip single-bit masks already initialized
             if (mask & (mask - 1)) == 0:
                 continue
-            stops = mask.bit_count()
 
-            # Iterate over set bits for `last`
             temp_last = mask
             while temp_last:
                 lsb_last = temp_last & -temp_last
@@ -97,8 +168,9 @@ def solve_best_rover_route(
                 vi_last = float(cand_vi[last])
                 d_ret = float(d0[last]) if return_to_lander else 0.0
 
-                best_state_score = -1.0
-                best_state_dist = np.inf
+                best_st_sc = -1.0
+                best_st_d = np.inf
+                best_prev = -1
 
                 temp_prev = prev_mask
                 while temp_prev:
@@ -113,64 +185,117 @@ def solve_best_rover_route(
                     new_d = prev_d + float(dist_mat[prev, last])
                     if new_d + d_ret <= r_max_km:
                         new_sc = dp_score[prev_mask, prev] + vi_last / (1.0 + decay_rate * new_d)
-                        if new_sc > best_state_score or (
-                            new_sc == best_state_score and new_d < best_state_dist
-                        ):
-                            best_state_score = new_sc
-                            best_state_dist = new_d
+                        if new_sc > best_st_sc or (new_sc == best_st_sc and new_d < best_st_d):
+                            best_st_sc = new_sc
+                            best_st_d = new_d
+                            best_prev = prev
 
-                if best_state_score >= 0.0:
-                    dp_dist[mask, last] = best_state_dist
-                    dp_score[mask, last] = best_state_score
-                    if best_state_score > best_score:
-                        best_score = best_state_score
-                        best_stops = stops
+                if best_st_sc >= 0.0:
+                    dp_dist[mask, last] = best_st_d
+                    dp_score[mask, last] = best_st_sc
+                    parent[mask, last] = best_prev
+                    if best_st_sc > best_score:
+                        best_score = best_st_sc
+                        best_state = (mask, last)
 
-        return best_score, best_stops
+        if best_state[0] == -1:
+            return 0.0, []
 
-    # 2. Bounded Beam Search for dense clusters (m > exact_limit)
-    # State tuple: (score, cum_dist, last_idx, visited_mask)
-    beam: list[tuple[float, float, int, int]] = []
+        path: list[int] = []
+        cur_mask, cur_last = best_state
+        while cur_last != -1:
+            path.append(cur_last)
+            prev_last = int(parent[cur_mask, cur_last])
+            cur_mask ^= 1 << cur_last
+            cur_last = prev_last
+        path.reverse()
+        return best_score, path
+
+    # 2. Multi-Tradeoff Distance-Aware Beam Search + 2-Opt & Insertion (m > exact_limit)
     best_score = 0.0
-    best_stops = 0
+    best_path: list[int] = []
+    avg_vi = float(np.mean(cand_vi))
 
-    for i in range(m):
-        leg = float(d0[i])
-        d_ret = leg if return_to_lander else 0.0
-        if leg + d_ret <= r_max_km:
-            sc = float(cand_vi[i] / (1.0 + decay_rate * leg))
-            beam.append((sc, leg, i, 1 << i))
-            if sc > best_score:
-                best_score = sc
-                best_stops = 1
+    for dist_penalty in (0.0, 0.5 * avg_vi / max(1.0, r_max_km / 6.0), 1.5 * avg_vi / max(1.0, r_max_km / 6.0)):
+        beam: list[tuple[float, float, float, int, int, list[int]]] = []
+        pass_best_sc = 0.0
+        pass_best_path: list[int] = []
 
-    beam.sort(key=lambda x: x[0], reverse=True)
-    beam = beam[:beam_width]
+        for i in range(m):
+            leg = float(d0[i])
+            if leg * roundtrip_mult <= r_max_km:
+                sc = float(cand_vi[i] / (1.0 + decay_rate * leg))
+                rank_key = sc - dist_penalty * leg
+                beam.append((rank_key, sc, leg, i, 1 << i, [i]))
+                if sc > pass_best_sc:
+                    pass_best_sc = sc
+                    pass_best_path = [i]
 
-    for step in range(2, m + 1):
-        next_states: dict[tuple[int, int], tuple[float, float, int, int]] = {}
-        for sc, cum_d, last, mask in beam:
-            for nxt in range(m):
-                if mask & (1 << nxt):
-                    continue
-                new_d = cum_d + float(dist_mat[last, nxt])
-                d_ret = float(d0[nxt]) if return_to_lander else 0.0
-                if new_d + d_ret <= r_max_km:
-                    new_sc = sc + float(cand_vi[nxt]) / (1.0 + decay_rate * new_d)
-                    new_mask = mask | (1 << nxt)
-                    key = (new_mask, nxt)
-                    prev_best = next_states.get(key)
-                    if prev_best is None or new_sc > prev_best[0]:
-                        next_states[key] = (new_sc, new_d, nxt, new_mask)
-                        if new_sc > best_score:
-                            best_score = new_sc
-                            best_stops = step
+        beam.sort(key=lambda x: x[0], reverse=True)
+        beam = beam[:beam_width]
 
-        if not next_states:
-            break
-        beam = sorted(next_states.values(), key=lambda x: x[0], reverse=True)[:beam_width]
+        for _ in range(2, m + 1):
+            next_states: dict[tuple[int, int], tuple[float, float, float, int, int, list[int]]] = {}
+            for _, sc, cum_d, last, mask, path in beam:
+                for nxt in range(m):
+                    if mask & (1 << nxt):
+                        continue
+                    new_d = cum_d + float(dist_mat[last, nxt])
+                    d_ret = float(d0[nxt]) if return_to_lander else 0.0
+                    if new_d + d_ret <= r_max_km:
+                        new_sc = sc + float(cand_vi[nxt]) / (1.0 + decay_rate * new_d)
+                        rank_key = new_sc - dist_penalty * new_d
+                        new_mask = mask | (1 << nxt)
+                        key = (new_mask, nxt)
+                        prev_best = next_states.get(key)
+                        if prev_best is None or new_sc > prev_best[1]:
+                            new_path = path + [nxt]
+                            next_states[key] = (rank_key, new_sc, new_d, nxt, new_mask, new_path)
+                            if new_sc > pass_best_sc:
+                                pass_best_sc = new_sc
+                                pass_best_path = new_path
 
-    return best_score, best_stops
+            if not next_states:
+                break
+            beam = sorted(next_states.values(), key=lambda x: x[0], reverse=True)[:beam_width]
+
+        if pass_best_path:
+            polished_sc, polished_path = _refine_path_2opt_and_insert(
+                pass_best_path, d0, dist_mat, cand_vi, r_max_km, decay_rate, return_to_lander
+            )
+            if polished_sc > pass_best_sc:
+                pass_best_sc = polished_sc
+                pass_best_path = polished_path
+
+        if pass_best_sc > best_score:
+            best_score = pass_best_sc
+            best_path = pass_best_path
+
+    return best_score, best_path
+
+
+def solve_best_rover_route(
+    site_xyz: np.ndarray,
+    cand_xyz: np.ndarray,
+    cand_vi: np.ndarray,
+    r_max_km: float,
+    decay_rate: float = 0.15,
+    return_to_lander: bool = False,
+    exact_limit: int = 12,
+    beam_width: int = 96,
+) -> tuple[float, int]:
+    """Return (best_raw_weight, visited_stop_count) for the optimal route within r_max_km."""
+    best_weight, path = solve_best_rover_route_with_path(
+        site_xyz=site_xyz,
+        cand_xyz=cand_xyz,
+        cand_vi=cand_vi,
+        r_max_km=r_max_km,
+        decay_rate=decay_rate,
+        return_to_lander=return_to_lander,
+        exact_limit=exact_limit,
+        beam_width=beam_width,
+    )
+    return best_weight, len(path)
 
 
 def calculate_scores(
@@ -284,4 +409,4 @@ if __name__ == "__main__":
     dt = (time.perf_counter() - t0) * 1000.0
     print(f"Scored {len(scored_df):,} feasible sites with optimal multi-stop routing in {dt:.1f} ms")
     cols = ["site_id", "tier", "s_safety", "reachable_ssi_count", "visited_ssi_count", "s_science"]
-    print(scored_df[cols].head(5).to_string(index=False))
+    print(scored_df[cols].head(5).to_string(index=False))   
