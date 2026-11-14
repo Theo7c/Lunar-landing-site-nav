@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from scipy.spatial import cKDTree
 
-SSIS_CSV = "processed_data/ssis.csv"
+from api.analysis.scores_calculator import SSIS_CSV, solve_best_rover_route
 
 # 12-column row list order:
 # [0] site_id, [1] tier, [2] lat, [3] lon, [4] x_km, [5] y_km, [6] z_km,
@@ -66,8 +66,12 @@ def calculate_ssi_score(
     r_max_km: float = 12.0,
     decay_rate: float = 0.15,
     science_half_sat: float = 5.0,
+    return_to_lander: bool = False,
 ) -> float:
-    """Compute site-independent science score in [0.0, 1.0] from a 12-element site row list."""
+    """
+    Find all SSIs within r_max_km of the 12-element site row, solve for the
+    maximum-weight route within the r_max_km traverse budget, and return s_science in [0.0, 1.0].
+    """
     if not site_row or len(site_row) < 7 or r_max_km <= 0.0:
         return 0.0
 
@@ -81,8 +85,14 @@ def calculate_ssi_score(
         return 0.0
 
     matched_idx = np.asarray(idx_list, dtype=np.int32)
-    dists = np.linalg.norm(ssi_xyz[matched_idx] - pt_xyz, axis=1)
-    raw_science = float(np.sum(ssi_vi[matched_idx] / (1.0 + float(decay_rate) * dists)))
+    raw_science, _ = solve_best_rover_route(
+        site_xyz=pt_xyz,
+        cand_xyz=ssi_xyz[matched_idx],
+        cand_vi=ssi_vi[matched_idx],
+        r_max_km=float(r_max_km),
+        decay_rate=float(decay_rate),
+        return_to_lander=return_to_lander,
+    )
 
     half_sat = max(1e-6, float(science_half_sat))
     s_science = raw_science / (raw_science + half_sat)
@@ -98,6 +108,7 @@ def calculate_score(
     r_max_km: float = 12.0,
     decay_rate: float = 0.15,
     science_half_sat: float = 5.0,
+    return_to_lander: bool = False,
     ssis_df: pd.DataFrame | None = None,
 ) -> tuple[float, float]:
     """Return (s_safety, s_science), both in [0.0, 1.0], for a single 12-element site row list."""
@@ -114,5 +125,6 @@ def calculate_score(
         r_max_km=r_max_km,
         decay_rate=decay_rate,
         science_half_sat=science_half_sat,
+        return_to_lander=return_to_lander,
     )
     return s_safety, s_science

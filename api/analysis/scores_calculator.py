@@ -23,6 +23,156 @@ def load_sites_and_ssis(
     return sites_df, ssis_df
 
 
+def solve_best_rover_route(
+    site_xyz: np.ndarray,
+    cand_xyz: np.ndarray,
+    cand_vi: np.ndarray,
+    r_max_km: float,
+    decay_rate: float = 0.15,
+    return_to_lander: bool = False,
+    exact_limit: int = 12,
+    beam_width: int = 32,
+) -> tuple[float, int]:
+    """
+    Find the route starting at site_xyz visiting a subset of candidate SSIs
+    that maximizes total distance-decayed weight without exceeding r_max_km.
+
+    Returns (best_raw_weight, visited_stop_count).
+    """
+    m = len(cand_vi)
+    if m == 0 or r_max_km <= 0.0:
+        return 0.0, 0
+
+    # Distances from lander (node 0) to each candidate SSI
+    d0 = np.linalg.norm(cand_xyz - site_xyz[None, :], axis=1)
+    roundtrip_mult = 2.0 if return_to_lander else 1.0
+
+    # Fast path: single candidate SSI in range
+    if m == 1:
+        if d0[0] * roundtrip_mult <= r_max_km:
+            return float(cand_vi[0] / (1.0 + decay_rate * d0[0])), 1
+        return 0.0, 0
+
+    # Pairwise Euclidean distance matrix between candidate SSIs: shape (m, m)
+    diff = cand_xyz[:, None, :] - cand_xyz[None, :, :]
+    dist_mat = np.sqrt(np.einsum("ijk,ijk->ij", diff, diff))
+
+    # 1. Exact Bitmask DP for up to `exact_limit` SSIs
+    if m <= exact_limit:
+        n_states = 1 << m
+        # dp_dist[mask, last] = minimum cumulative path distance to reach `last` visiting `mask`
+        # dp_score[mask, last] = maximum cumulative decayed weight for that state
+        dp_dist = np.full((n_states, m), np.inf, dtype=np.float64)
+        dp_score = np.full((n_states, m), -1.0, dtype=np.float64)
+
+        best_score = 0.0
+        best_stops = 0
+
+        for i in range(m):
+            leg = float(d0[i])
+            total_req = leg + (leg if return_to_lander else 0.0)
+            if total_req <= r_max_km:
+                mask = 1 << i
+                sc = float(cand_vi[i] / (1.0 + decay_rate * leg))
+                dp_dist[mask, i] = leg
+                dp_score[mask, i] = sc
+                if sc > best_score:
+                    best_score = sc
+                    best_stops = 1
+
+        for mask in range(1, n_states):
+            # Skip single-bit masks already initialized
+            if (mask & (mask - 1)) == 0:
+                continue
+            stops = mask.bit_count()
+
+            # Iterate over set bits for `last`
+            temp_last = mask
+            while temp_last:
+                lsb_last = temp_last & -temp_last
+                last = lsb_last.bit_length() - 1
+                temp_last ^= lsb_last
+
+                prev_mask = mask ^ lsb_last
+                vi_last = float(cand_vi[last])
+                d_ret = float(d0[last]) if return_to_lander else 0.0
+
+                best_state_score = -1.0
+                best_state_dist = np.inf
+
+                temp_prev = prev_mask
+                while temp_prev:
+                    lsb_prev = temp_prev & -temp_prev
+                    prev = lsb_prev.bit_length() - 1
+                    temp_prev ^= lsb_prev
+
+                    prev_d = dp_dist[prev_mask, prev]
+                    if prev_d == np.inf:
+                        continue
+
+                    new_d = prev_d + float(dist_mat[prev, last])
+                    if new_d + d_ret <= r_max_km:
+                        new_sc = dp_score[prev_mask, prev] + vi_last / (1.0 + decay_rate * new_d)
+                        if new_sc > best_state_score or (
+                            new_sc == best_state_score and new_d < best_state_dist
+                        ):
+                            best_state_score = new_sc
+                            best_state_dist = new_d
+
+                if best_state_score >= 0.0:
+                    dp_dist[mask, last] = best_state_dist
+                    dp_score[mask, last] = best_state_score
+                    if best_state_score > best_score:
+                        best_score = best_state_score
+                        best_stops = stops
+
+        return best_score, best_stops
+
+    # 2. Bounded Beam Search for dense clusters (m > exact_limit)
+    # State tuple: (score, cum_dist, last_idx, visited_mask)
+    beam: list[tuple[float, float, int, int]] = []
+    best_score = 0.0
+    best_stops = 0
+
+    for i in range(m):
+        leg = float(d0[i])
+        d_ret = leg if return_to_lander else 0.0
+        if leg + d_ret <= r_max_km:
+            sc = float(cand_vi[i] / (1.0 + decay_rate * leg))
+            beam.append((sc, leg, i, 1 << i))
+            if sc > best_score:
+                best_score = sc
+                best_stops = 1
+
+    beam.sort(key=lambda x: x[0], reverse=True)
+    beam = beam[:beam_width]
+
+    for step in range(2, m + 1):
+        next_states: dict[tuple[int, int], tuple[float, float, int, int]] = {}
+        for sc, cum_d, last, mask in beam:
+            for nxt in range(m):
+                if mask & (1 << nxt):
+                    continue
+                new_d = cum_d + float(dist_mat[last, nxt])
+                d_ret = float(d0[nxt]) if return_to_lander else 0.0
+                if new_d + d_ret <= r_max_km:
+                    new_sc = sc + float(cand_vi[nxt]) / (1.0 + decay_rate * new_d)
+                    new_mask = mask | (1 << nxt)
+                    key = (new_mask, nxt)
+                    prev_best = next_states.get(key)
+                    if prev_best is None or new_sc > prev_best[0]:
+                        next_states[key] = (new_sc, new_d, nxt, new_mask)
+                        if new_sc > best_score:
+                            best_score = new_sc
+                            best_stops = step
+
+        if not next_states:
+            break
+        beam = sorted(next_states.values(), key=lambda x: x[0], reverse=True)[:beam_width]
+
+    return best_score, best_stops
+
+
 def calculate_scores(
     sites_df: pd.DataFrame | None = None,
     ssis_df: pd.DataFrame | None = None,
@@ -33,12 +183,13 @@ def calculate_scores(
     r_max_km: float = 12.0,
     decay_rate: float = 0.15,
     science_half_sat: float = 5.0,
+    return_to_lander: bool = False,
     filter_infeasible: bool = True,
 ) -> pd.DataFrame:
     """
-    Fast, vectorized batch scoring across all candidate sites.
-    Scores are scaled independently into [0.0, 1.0] per site with zero dependence
-    on other sites in the grid.
+    Fast batch scoring across all candidate sites.
+    Finds all SSIs within r_max_km and computes the highest-weight rover route
+    whose total travel distance does not exceed r_max_km.
     """
     if sites_df is None or ssis_df is None:
         loaded_sites, loaded_ssis = load_sites_and_ssis()
@@ -73,6 +224,7 @@ def calculate_scores(
         df["feasible"] = pd.Series(dtype=bool)
         df["s_safety"] = pd.Series(dtype=float)
         df["reachable_ssi_count"] = pd.Series(dtype=int)
+        df["visited_ssi_count"] = pd.Series(dtype=int)
         df["s_science"] = pd.Series(dtype=float)
         return df
 
@@ -80,8 +232,9 @@ def calculate_scores(
     t_rough = np.clip(1.0 - (rough / rough_lim), 0.0, 1.0)
     s_safety = np.where(feasible_out, alpha * t_slope + (1.0 - alpha) * t_rough, 0.0)
 
-    # 2. Fast 3D cKDTree Radius Query for Independent Science Score in [0.0, 1.0]
+    # 2. Optimal Max-Weight Rover Route within r_max_km budget
     reachable_counts = np.zeros(n_sites, dtype=np.int32)
+    visited_counts = np.zeros(n_sites, dtype=np.int32)
     raw_science = np.zeros(n_sites, dtype=np.float64)
 
     if not ssis_df.empty and r_max_km > 0.0:
@@ -92,24 +245,26 @@ def calculate_scores(
         ssi_tree = cKDTree(ssi_xyz)
         neighbor_lists = ssi_tree.query_ball_point(site_xyz, r=float(r_max_km), workers=-1)
 
-        # Flatten matched (site_idx, ssi_idx) pairs for vectorized distance & decay math
-        counts = np.fromiter((len(lst) for lst in neighbor_lists), dtype=np.int32, count=n_sites)
-        reachable_counts = counts
-        total_pairs = int(counts.sum())
+        r_budget = float(r_max_km)
+        k_decay = float(decay_rate)
 
-        if total_pairs > 0:
-            site_idx_flat = np.repeat(np.arange(n_sites, dtype=np.int32), counts)
-            ssi_idx_flat = np.fromiter(
-                (idx for lst in neighbor_lists for idx in lst),
-                dtype=np.int32,
-                count=total_pairs,
+        for idx, nbrs in enumerate(neighbor_lists):
+            n_nbrs = len(nbrs)
+            reachable_counts[idx] = n_nbrs
+            if n_nbrs == 0:
+                continue
+
+            nbr_arr = np.asarray(nbrs, dtype=np.int32)
+            best_w, n_visited = solve_best_rover_route(
+                site_xyz=site_xyz[idx],
+                cand_xyz=ssi_xyz[nbr_arr],
+                cand_vi=ssi_vi[nbr_arr],
+                r_max_km=r_budget,
+                decay_rate=k_decay,
+                return_to_lander=return_to_lander,
             )
-
-            diffs = site_xyz[site_idx_flat] - ssi_xyz[ssi_idx_flat]
-            dists = np.sqrt(np.einsum("ij,ij->i", diffs, diffs))
-            weights = ssi_vi[ssi_idx_flat] / (1.0 + float(decay_rate) * dists)
-
-            np.add.at(raw_science, site_idx_flat, weights)
+            raw_science[idx] = best_w
+            visited_counts[idx] = n_visited
 
     half_sat = max(1e-6, float(science_half_sat))
     s_science = raw_science / (raw_science + half_sat)
@@ -117,6 +272,7 @@ def calculate_scores(
     df["feasible"] = feasible_out
     df["s_safety"] = np.round(np.clip(s_safety, 0.0, 1.0), 4)
     df["reachable_ssi_count"] = reachable_counts
+    df["visited_ssi_count"] = visited_counts
     df["s_science"] = np.round(np.clip(s_science, 0.0, 1.0), 4)
     return df
 
@@ -126,5 +282,6 @@ if __name__ == "__main__":
     t0 = time.perf_counter()
     scored_df = calculate_scores()
     dt = (time.perf_counter() - t0) * 1000.0
-    print(f"Scored {len(scored_df):,} feasible sites in {dt:.1f} ms")
-    print(scored_df[["site_id", "tier", "s_safety", "reachable_ssi_count", "s_science"]].head(5).to_string(index=False))
+    print(f"Scored {len(scored_df):,} feasible sites with optimal multi-stop routing in {dt:.1f} ms")
+    cols = ["site_id", "tier", "s_safety", "reachable_ssi_count", "visited_ssi_count", "s_science"]
+    print(scored_df[cols].head(5).to_string(index=False))
