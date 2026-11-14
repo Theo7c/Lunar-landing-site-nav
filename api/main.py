@@ -1,7 +1,9 @@
 from datetime import datetime
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from analysis.horizon import GetHorizonsEphemeris
+from analysis.inspect_point import main
 
 # initialise fast api instance
 app = FastAPI()
@@ -50,8 +52,7 @@ async def root(lat: float, lng: float, time_start: str, time_end: str):
 
     resolution = get_resolution(delta_ms)
 
-    # TODO: get altitude and set resolution
-    alt = -1.9 # km
+    alt = main(lat, lng)[0][8]/1000
 
     # earth data
     df = GetHorizonsEphemeris("Earth", (lng, lat, alt), (t0, t1), (1, resolution))
