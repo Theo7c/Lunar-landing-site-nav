@@ -13,7 +13,7 @@ def GetHorizonsEphemeris(target:str, coords:tuple, timeRange:tuple, timeResoluti
     target : str
         Earth or Sun.
     coords : tuple of floats, ints, or strings
-        (longitude,latitude,elevation). deg,deg,km relative to avg radius.
+        (longitude,latitude,altitude). deg,deg,km relative to avg radius.
     timeRange : tuple of strings
         (startTime,stopTime) in YYYY-MM-DD {HH:MM}. {} indicates optional parameters.
     timeResolution : tuple of (string/float/int, string)
@@ -75,7 +75,7 @@ OBJ_DATA='YES'"""
     ephemerisData = ephemerisLines[SOE+1:EOE]
     ephemerisClean = []
     for line in ephemerisData:
-        line = line[:len(line)-1]
+        line = line[1:len(line)-1]
         ephemerisClean.append(line)
     ephemerisFile = StringIO("\n".join(ephemerisClean))
     headers = ["dateTime","SunVisible","EarthVisible","azimuth","altitude"]
