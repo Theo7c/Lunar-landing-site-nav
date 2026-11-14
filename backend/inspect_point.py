@@ -1,11 +1,15 @@
 import os
 import uuid
+import warnings
 import requests
 import numpy as np
 import pandas as pd
 import rasterio
+from rasterio.errors import NotGeoreferencedWarning
 from rasterio.warp import transform
 from rasterio.windows import Window
+
+warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
 
 R_MOON_KM = 1737.4
 R_MOON_M = 1_737_400.0
@@ -18,7 +22,6 @@ CSV_COLUMNS = [
     "area_radius_m", "elevation_m", "max_slope_deg", "mean_slope_deg", "roughness_m",
 ]
 
-# Candidate remote NASA URLs + local DEM fallbacks
 SP_SOURCES = [
     "https://pgda.gsfc.nasa.gov/data/LOLA_80S_20MPP_ADJ/LDEM_80S_20MPP_ADJ.TIF",
     "https://pgda.gsfc.nasa.gov/data/LOLA_80S_20MPP_ADJ/LDEM_80S_20MPP_ADJ.tiff",
@@ -26,7 +29,8 @@ SP_SOURCES = [
 ]
 
 GLOBAL_SOURCES = [
-    "https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/ldem_16.tif",
+    "https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/ldem_64.tif",
+    "raw_data/ldem_64.tif",
     "raw_data/ldem_16.tif",
 ]
 
@@ -51,10 +55,6 @@ def latlon_to_xyz(lat_deg: float, lon_deg: float) -> tuple[float, float, float]:
 
 
 def resolve_valid_raster(candidates: list[str]) -> str:
-    """
-    Pick the first working GeoTIFF source. For HTTP URLs, verify the server
-    returns TIFF magic bytes (not an HTML 404/login page) via a 4-byte Range request.
-    """
     for path in candidates:
         if path.startswith("http"):
             try:
@@ -83,9 +83,9 @@ def inspect_and_save_point(
     dedup_radius_km: float = 0.15,
 ) -> dict:
     """
-    Streams the exact NASA DEM window for (lat, lon), computes the 12 static
-    terrain columns, and saves feasible points (max_slope_deg <= 15.0) to
-    processed_data/user_inspected_sites.csv.
+    Streams the exact NASA DEM window for (lat, lon) using 20-80 m/px polar DEM
+    or 474 m/px ldem_64 global DEM, computes the 12 static terrain columns without
+    slope filtering, and saves to processed_data/user_inspected_sites.csv.
     """
     lon = normalize_lon(lon)
     is_south_pole = lat <= -80.0
@@ -94,20 +94,23 @@ def inspect_and_save_point(
 
     with rasterio.Env(**GDAL_CURL_ENV):
         with rasterio.open(dataset_path) as src:
-            res_m = abs(src.res[0])
             if is_south_pole:
+                res_m = abs(src.res[0])
                 xs, ys = transform("+proj=longlat +R=1737400 +no_defs", src.crs, [lon], [lat])
                 row, col = src.index(xs[0], ys[0])
-                # Scale window size dynamically to cover a ~500 m box (25x25 at 20m, 7x7 at 80m)
                 half_win = max(3, int(round(250.0 / res_m)))
                 area_radius_m = 250
             else:
-                query_lon = lon + 360.0 if (src.bounds.left >= 0 and lon < 0) else lon
-                row, col = src.index(query_lon, lat)
                 dlat_rad = np.pi / src.height
-                res_m = R_MOON_M * dlat_rad
-                half_win = 2
-                area_radius_m = 950
+                res_m = R_MOON_M * dlat_rad  # ~473.8 m/px for ldem_64.tif
+                if src.crs is not None:
+                    query_lon = lon + 360.0 if (src.bounds.left >= 0 and lon < 0) else lon
+                    row, col = src.index(query_lon, lat)
+                else:
+                    row = int(np.clip((90.0 - lat) / 180.0 * src.height, 0, src.height - 1))
+                    col = int(np.clip((lon + 180.0) / 360.0 * src.width, 0, src.width - 1))
+                half_win = 1  # 3x3 pixel window (~710 m radius on ldem_64)
+                area_radius_m = int(round(1.5 * res_m))
 
             r0 = max(0, row - half_win)
             c0 = max(0, col - half_win)
@@ -130,6 +133,13 @@ def inspect_and_save_point(
             mean_slope_deg = float(np.nanmean(slope_patch))
             roughness_m = float(np.nanstd(patch))
 
+    if np.isnan(elevation_m) or np.isnan(max_slope_deg):
+        return {
+            "saved": False,
+            "source": dataset_path,
+            "reason": "No valid DEM elevation data (NaN/nodata) at this coordinate.",
+        }
+
     x_km, y_km, z_km = latlon_to_xyz(lat, lon)
     new_site_id = f"USER_{uuid.uuid4().hex[:6].upper()}"
 
@@ -147,14 +157,6 @@ def inspect_and_save_point(
         "mean_slope_deg": round(mean_slope_deg, 2),
         "roughness_m": round(roughness_m, 2),
     }
-
-    if max_slope_deg > 15.0:
-        return {
-            "saved": False,
-            "source": dataset_path,
-            "reason": f"Rejected: max_slope_deg ({row_dict['max_slope_deg']}°) exceeds 15.0° limit.",
-            "site": row_dict,
-        }
 
     all_sites_df = load_all_landing_sites()
     if not all_sites_df.empty:
@@ -189,3 +191,21 @@ def inspect_and_save_point(
             "reason": f"Read-only filesystem ({exc}); returned row without disk write.",
             "site": row_dict,
         }
+
+
+def main(lat: float, lon: float, dedup_radius_km: float = 0.15) -> list:
+    """
+    Inspects (lat, lon), saves the new site to processed_data/user_inspected_sites.csv
+    (unless already covered within dedup_radius_km), and returns the 12-column row
+    as a Python list ordered by CSV_COLUMNS. Returns [] if no valid DEM data exists.
+    """
+    result = inspect_and_save_point(lat=lat, lon=lon, dedup_radius_km=dedup_radius_km)
+    site = result.get("site")
+    if not site:
+        return []
+    return [site[col] for col in CSV_COLUMNS]
+
+
+if __name__ == "__main__":
+    row_list = main(lat=-78.4521, lon=-130.4890)
+    print(row_list)

@@ -19,8 +19,8 @@ from backend.inspect_point import inspect_and_save_point, CUSTOM_SITES_CSV  # no
 # DEFAULT TEST COORDINATE (Change these or pass --lat / --lon in terminal)
 # ==============================================================================
 # Example 1 (South Pole, 20 m/px NASA DEM): Shackleton-de Gerlache Ridge
-DEFAULT_LAT = -89.4521
-DEFAULT_LON = -137.4890
+DEFAULT_LAT = -78.4521
+DEFAULT_LON = -130.4890
 
 # Example 2 (Global, ldem_16 DEM): Mare Tranquillitatis Pit -> lat=8.380, lon=33.250
 
