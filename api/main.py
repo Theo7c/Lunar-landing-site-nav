@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime
 import os
 import sys
@@ -21,7 +20,6 @@ from analysis.inspect_point import (
 from analysis.score_calculator import (
     calculate_safety_score,
     calculate_ssi_score,
-    calculate_astronomical_scores,
 )
 from analysis.scores_calculator import scores_calculator, DEFAULT_MAX_STOPS
 from analysis.render_route_map import render_rover_route_image
@@ -90,8 +88,6 @@ def _build_full_site_payload(
     """
     Builds the complete single-site response dictionary (site metadata, 360-deg horizon
     profile, Sun/Earth ephemeris + horizon elevation series, and exact scores).
-    Reuses `precomputed_safety_science` when called from batch ranking while always
-    computing exact `s_sun` and `s_earth` from the fetched ephemeris and horizon profile.
     """
     lat = float(site_row[2])
     lng = float(site_row[3])
@@ -371,7 +367,7 @@ async def get_route_map(
 
 
 # ==============================================================================
-# 4. BATCH WEIGHTED MCDM SCORING (TOP-20 EXACT REFINEMENT -> TOP-5 RETURNED)
+# 4. FAST BATCH WEIGHTED MCDM SCORING (ESTIMATION ONLY -> TOP-5 LAT/LON)
 # ==============================================================================
 @app.get("/api/sites/scores")
 async def all_sites_scores(
@@ -379,7 +375,6 @@ async def all_sites_scores(
     w_science: float = 0.25,
     w_sun: float = 0.25,
     w_earth: float = 0.25,
-    candidate_pool: int = 20,
     top_n: int = 5,
     time_start: str = "2027-01-01T00:00:00",
     time_end: str = "2027-01-30T00:00:00",
@@ -395,11 +390,9 @@ async def all_sites_scores(
     filter_infeasible: bool = True,
 ):
     """
-    1. Batch-scores all candidate sites using fast astronomical approximations.
-    2. Selects the top `candidate_pool` (default 20) sites and evaluates their exact
-       360-deg horizon profiles + JPL Horizons Sun/Earth ephemerides in parallel.
-    3. Re-ranks those 20 candidates using exact `s_sun` and `s_earth`, and returns
-       only the final top `top_n` (default 5) full root-level payloads.
+    Batch-evaluates all candidate sites using fast local estimation (no external
+    JPL Horizons API calls), ranks them by weighted MCDM score, and returns the
+    top `top_n` (default 5) candidates' coordinates and estimated scores.
     """
     if any(w < 0.0 for w in (w_safety, w_science, w_sun, w_earth)):
         raise HTTPException(status_code=400, detail="Weights must be non-negative.")
@@ -437,8 +430,6 @@ async def all_sites_scores(
         total_ms = (time.perf_counter() - t_start) * 1000.0
         return {
             "evaluated_count": 0,
-            "refined_candidate_count": 0,
-            "resolution": resolution,
             "normalized_weights": {
                 "w_safety": round(nw_safety, 4),
                 "w_science": round(nw_science, 4),
@@ -447,103 +438,54 @@ async def all_sites_scores(
             },
             "timings_ms": {
                 "batch_score_ms": round(batch_score_ms, 2),
-                "top_candidates_ephemeris_ms": 0.0,
                 "total_ms": round(total_ms, 2),
             },
             "top_sites": [],
         }
 
-    # Initial proxy ranking across the full catalog
-    df["proxy_total_score"] = (
+    df["total_score"] = np.round(
         nw_safety * df["s_safety"]
         + nw_science * df["s_science"]
         + nw_sun * df["s_sun"]
-        + nw_earth * df["s_earth"]
+        + nw_earth * df["s_earth"],
+        4,
     )
 
-    pool_k = max(1, max(int(candidate_pool), int(top_n)))
-    shortlist_df = (
+    ranked_df = (
         df.sort_values(
-            by=["proxy_total_score", "s_safety", "s_science"],
+            by=["total_score", "s_safety", "s_science"],
             ascending=[False, False, False],
         )
-        .head(pool_k)
+        .head(max(1, int(top_n)))
         .reset_index(drop=True)
     )
 
-    # Evaluate exact horizon + JPL Horizons ephemeris for the top 20 candidates in parallel
-    t_eph = time.perf_counter()
-
-    def _evaluate_exact_candidate(row_dict: dict) -> dict:
-        site_row = [row_dict[col] for col in CSV_COLUMNS]
-        s_safety = float(row_dict["s_safety"])
-        s_science = float(row_dict["s_science"])
-
-        full_payload, _ = _build_full_site_payload(
-            site_row=site_row,
-            t0=t0,
-            t1=t1,
-            resolution=resolution,
-            max_stops=max_stops,
-            precomputed_safety_science={
-                "s_safety": s_safety,
-                "s_science": s_science,
-            },
-        )
-        s_sun_exact = float(full_payload["scores"]["s_sun"])
-        s_earth_exact = float(full_payload["scores"]["s_earth"])
-        exact_total = round(
-            nw_safety * s_safety
-            + nw_science * s_science
-            + nw_sun * s_sun_exact
-            + nw_earth * s_earth_exact,
-            4,
-        )
-        full_payload["scores"]["total_score"] = exact_total
-
-        return {
-            **full_payload,
-            "rover": {
-                "reachable_ssi_count": int(row_dict["reachable_ssi_count"]),
-                "visited_ssi_count": int(row_dict["visited_ssi_count"]),
+    top_sites = [
+        {
+            "rank": idx + 1,
+            "site_id": str(row["site_id"]),
+            "lat": float(row["lat"]),
+            "lon": float(row["lon"]),
+            "scores": {
+                "s_safety": float(row["s_safety"]),
+                "s_science": float(row["s_science"]),
+                "s_sun": float(row["s_sun"]),
+                "s_earth": float(row["s_earth"]),
+                "total_score": float(row["total_score"]),
             },
         }
-
-    tasks = [
-        asyncio.to_thread(_evaluate_exact_candidate, row.to_dict())
-        for _, row in shortlist_df.iterrows()
+        for idx, row in ranked_df.iterrows()
     ]
-    refined_candidates = list(await asyncio.gather(*tasks))
-    top_candidates_ephemeris_ms = (time.perf_counter() - t_eph) * 1000.0
-
-    # Re-sort the 20 refined candidates by exact total_score and keep only the top 5
-    refined_candidates.sort(
-        key=lambda item: (
-            item["scores"]["total_score"],
-            item["scores"]["s_safety"],
-            item["scores"]["s_science"],
-        ),
-        reverse=True,
-    )
-    final_top = refined_candidates[: max(1, int(top_n))]
-    for idx, site_payload in enumerate(final_top):
-        site_payload["rank"] = idx + 1
 
     total_ms = (time.perf_counter() - t_start) * 1000.0
     timings_ms = {
         "batch_score_ms": round(batch_score_ms, 2),
-        "top_candidates_ephemeris_ms": round(top_candidates_ephemeris_ms, 2),
         "total_ms": round(total_ms, 2),
     }
-    print(
-        f"[GET /api/sites/scores] Evaluated {len(df)} sites -> refined top {len(refined_candidates)} "
-        f"-> returned top {len(final_top)} in {timings_ms}"
-    )
+    print(f"[GET /api/sites/scores] Evaluated {len(df)} sites -> top {len(top_sites)} in {timings_ms}")
 
     return {
         "evaluated_count": len(df),
-        "refined_candidate_count": len(refined_candidates),
-        "resolution": resolution,
         "normalized_weights": {
             "w_safety": round(nw_safety, 4),
             "w_science": round(nw_science, 4),
@@ -551,5 +493,5 @@ async def all_sites_scores(
             "w_earth": round(nw_earth, 4),
         },
         "timings_ms": timings_ms,
-        "top_sites": final_top,
+        "top_sites": top_sites,
     }
