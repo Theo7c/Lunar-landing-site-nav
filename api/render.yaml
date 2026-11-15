@@ -1,0 +1,9 @@
+services:
+  # a docker web service
+  - type: web
+    name: lunar-landing-site-nav
+    runtime: python
+    plan: free
+    autoDeploy: false
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
