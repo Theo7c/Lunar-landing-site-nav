@@ -1,6 +1,9 @@
 import argparse
+import io
 import os
+import sys
 import warnings
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -14,265 +17,45 @@ from rasterio.warp import transform
 from rasterio.windows import Window
 from scipy.spatial import cKDTree
 
-from inspect_point import (
-    main as inspect_point,
-    get_dataset,
-    normalize_lon,
-    SP_SOURCES,
-    GLOBAL_SOURCES,
-    R_MOON_M,
-)
-from scores_calculator import SSIS_CSV
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+for rel_path in ("", "..", os.path.join("..", "..")):
+    candidate_dir = os.path.abspath(os.path.join(CURRENT_DIR, rel_path))
+    if candidate_dir not in sys.path:
+        sys.path.insert(0, candidate_dir)
+
+try:
+    from api.analysis.inspect_point import (
+        inspect_site_terrain,
+        get_dataset,
+        normalize_lon,
+        SP_SOURCES,
+        GLOBAL_SOURCES,
+        R_MOON_M,
+    )
+except ImportError:
+    from inspect_point import (
+        inspect_site_terrain,
+        get_dataset,
+        normalize_lon,
+        SP_SOURCES,
+        GLOBAL_SOURCES,
+        R_MOON_M,
+    )
+
+try:
+    from api.analysis.scores_calculator import (
+        SSIS_CSV,
+        solve_best_rover_route_with_path,
+        _resolve_csv_path,
+    )
+except ImportError:
+    from scores_calculator import (
+        SSIS_CSV,
+        solve_best_rover_route_with_path,
+        _resolve_csv_path,
+    )
 
 warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
-
-
-def _evaluate_path(
-    path: list[int],
-    d0: np.ndarray,
-    dist_mat: np.ndarray,
-    cand_vi: np.ndarray,
-    r_max_km: float,
-    decay_rate: float,
-    return_to_lander: bool,
-) -> tuple[float, float]:
-    """Compute (total_score, total_distance_km) for an ordered sequence of candidate indices."""
-    if not path:
-        return 0.0, 0.0
-    cum_d = float(d0[path[0]])
-    score = float(cand_vi[path[0]]) / (1.0 + decay_rate * cum_d)
-    for k in range(1, len(path)):
-        cum_d += float(dist_mat[path[k - 1], path[k]])
-        score += float(cand_vi[path[k]]) / (1.0 + decay_rate * cum_d)
-    total_d = cum_d + (float(d0[path[-1]]) if return_to_lander else 0.0)
-    if total_d > r_max_km + 1e-9:
-        return -1.0, total_d
-    return score, total_d
-
-
-def _refine_path_2opt_and_insert(
-    path: list[int],
-    d0: np.ndarray,
-    dist_mat: np.ndarray,
-    cand_vi: np.ndarray,
-    r_max_km: float,
-    decay_rate: float,
-    return_to_lander: bool,
-) -> tuple[float, list[int]]:
-    """Shorten path via 2-opt swaps, then greedily insert unvisited SSIs within budget."""
-    m = len(cand_vi)
-    cur_path = list(path)
-    cur_score, _ = _evaluate_path(cur_path, d0, dist_mat, cand_vi, r_max_km, decay_rate, return_to_lander)
-    if cur_score < 0.0:
-        return 0.0, []
-
-    # 1. 2-opt local search to eliminate crossings and reduce cumulative distance
-    improved = True
-    while improved and len(cur_path) >= 3:
-        improved = False
-        n = len(cur_path)
-        for i in range(n - 1):
-            for j in range(i + 2, n + 1):
-                candidate = cur_path[:i] + cur_path[i:j][::-1] + cur_path[j:]
-                sc, _ = _evaluate_path(candidate, d0, dist_mat, cand_vi, r_max_km, decay_rate, return_to_lander)
-                if sc > cur_score + 1e-9:
-                    cur_path = candidate
-                    cur_score = sc
-                    improved = True
-
-    # 2. Iterative best-insertion of remaining unvisited SSIs within r_max_km
-    visited = set(cur_path)
-    while len(visited) < m:
-        best_gain = 0.0
-        best_new_path = None
-        best_new_score = cur_score
-        best_node = -1
-
-        for node in range(m):
-            if node in visited:
-                continue
-            for pos in range(len(cur_path) + 1):
-                candidate = cur_path[:pos] + [node] + cur_path[pos:]
-                sc, _ = _evaluate_path(candidate, d0, dist_mat, cand_vi, r_max_km, decay_rate, return_to_lander)
-                if sc > best_new_score + 1e-9:
-                    best_gain = sc - cur_score
-                    best_new_score = sc
-                    best_new_path = candidate
-                    best_node = node
-
-        if best_new_path is None or best_gain <= 0.0:
-            break
-        cur_path = best_new_path
-        cur_score = best_new_score
-        visited.add(best_node)
-
-    return cur_score, cur_path
-
-
-def solve_best_rover_route_with_path(
-    site_xyz: np.ndarray,
-    cand_xyz: np.ndarray,
-    cand_vi: np.ndarray,
-    r_max_km: float,
-    decay_rate: float = 0.15,
-    return_to_lander: bool = False,
-    exact_limit: int = 12,
-    beam_width: int = 96,
-) -> tuple[float, list[int]]:
-    """
-    Solve for the maximum-weight rover traverse starting at `site_xyz` whose total
-    travel distance does not exceed `r_max_km`.
-    Returns (best_raw_weight, ordered_candidate_indices).
-    """
-    m = len(cand_vi)
-    if m == 0 or r_max_km <= 0.0:
-        return 0.0, []
-
-    d0 = np.linalg.norm(cand_xyz - site_xyz[None, :], axis=1)
-    roundtrip_mult = 2.0 if return_to_lander else 1.0
-
-    if m == 1:
-        if d0[0] * roundtrip_mult <= r_max_km:
-            return float(cand_vi[0] / (1.0 + decay_rate * d0[0])), [0]
-        return 0.0, []
-
-    diff = cand_xyz[:, None, :] - cand_xyz[None, :, :]
-    dist_mat = np.sqrt(np.einsum("ijk,ijk->ij", diff, diff))
-
-    # 1. Exact Bitmask DP with parent backtracking (m <= exact_limit)
-    if m <= exact_limit:
-        n_states = 1 << m
-        dp_dist = np.full((n_states, m), np.inf, dtype=np.float64)
-        dp_score = np.full((n_states, m), -1.0, dtype=np.float64)
-        parent = np.full((n_states, m), -1, dtype=np.int32)
-
-        best_score = 0.0
-        best_state = (-1, -1)
-
-        for i in range(m):
-            leg = float(d0[i])
-            if leg * roundtrip_mult <= r_max_km:
-                mask = 1 << i
-                sc = float(cand_vi[i] / (1.0 + decay_rate * leg))
-                dp_dist[mask, i] = leg
-                dp_score[mask, i] = sc
-                if sc > best_score:
-                    best_score = sc
-                    best_state = (mask, i)
-
-        for mask in range(1, n_states):
-            if (mask & (mask - 1)) == 0:
-                continue
-
-            temp_last = mask
-            while temp_last:
-                lsb_last = temp_last & -temp_last
-                last = lsb_last.bit_length() - 1
-                temp_last ^= lsb_last
-
-                prev_mask = mask ^ lsb_last
-                vi_last = float(cand_vi[last])
-                d_ret = float(d0[last]) if return_to_lander else 0.0
-
-                best_st_sc = -1.0
-                best_st_d = np.inf
-                best_prev = -1
-
-                temp_prev = prev_mask
-                while temp_prev:
-                    lsb_prev = temp_prev & -temp_prev
-                    prev = lsb_prev.bit_length() - 1
-                    temp_prev ^= lsb_prev
-
-                    prev_d = dp_dist[prev_mask, prev]
-                    if prev_d == np.inf:
-                        continue
-
-                    new_d = prev_d + float(dist_mat[prev, last])
-                    if new_d + d_ret <= r_max_km:
-                        new_sc = dp_score[prev_mask, prev] + vi_last / (1.0 + decay_rate * new_d)
-                        if new_sc > best_st_sc or (new_sc == best_st_sc and new_d < best_st_d):
-                            best_st_sc = new_sc
-                            best_st_d = new_d
-                            best_prev = prev
-
-                if best_st_sc >= 0.0:
-                    dp_dist[mask, last] = best_st_d
-                    dp_score[mask, last] = best_st_sc
-                    parent[mask, last] = best_prev
-                    if best_st_sc > best_score:
-                        best_score = best_st_sc
-                        best_state = (mask, last)
-
-        if best_state[0] == -1:
-            return 0.0, []
-
-        path: list[int] = []
-        cur_mask, cur_last = best_state
-        while cur_last != -1:
-            path.append(cur_last)
-            prev_last = int(parent[cur_mask, cur_last])
-            cur_mask ^= 1 << cur_last
-            cur_last = prev_last
-        path.reverse()
-        return best_score, path
-
-    # 2. Multi-Tradeoff Distance-Aware Beam Search + 2-Opt & Insertion (m > exact_limit)
-    best_score = 0.0
-    best_path: list[int] = []
-    avg_vi = float(np.mean(cand_vi))
-
-    # Run beam search across 3 distance-penalty weights so short-hop dense tours aren't crowded out
-    for dist_penalty in (0.0, 0.5 * avg_vi / max(1.0, r_max_km / 6.0), 1.5 * avg_vi / max(1.0, r_max_km / 6.0)):
-        beam: list[tuple[float, float, float, int, int, list[int]]] = []
-        for i in range(m):
-            leg = float(d0[i])
-            if leg * roundtrip_mult <= r_max_km:
-                sc = float(cand_vi[i] / (1.0 + decay_rate * leg))
-                rank_key = sc - dist_penalty * leg
-                beam.append((rank_key, sc, leg, i, 1 << i, [i]))
-                if sc > best_score:
-                    best_score = sc
-                    best_path = [i]
-
-        beam.sort(key=lambda x: x[0], reverse=True)
-        beam = beam[:beam_width]
-
-        for _ in range(2, m + 1):
-            next_states: dict[tuple[int, int], tuple[float, float, float, int, int, list[int]]] = {}
-            for _, sc, cum_d, last, mask, path in beam:
-                for nxt in range(m):
-                    if mask & (1 << nxt):
-                        continue
-                    new_d = cum_d + float(dist_mat[last, nxt])
-                    d_ret = float(d0[nxt]) if return_to_lander else 0.0
-                    if new_d + d_ret <= r_max_km:
-                        new_sc = sc + float(cand_vi[nxt]) / (1.0 + decay_rate * new_d)
-                        rank_key = new_sc - dist_penalty * new_d
-                        new_mask = mask | (1 << nxt)
-                        key = (new_mask, nxt)
-                        prev_best = next_states.get(key)
-                        if prev_best is None or new_sc > prev_best[1]:
-                            new_path = path + [nxt]
-                            next_states[key] = (rank_key, new_sc, new_d, nxt, new_mask, new_path)
-                            if new_sc > best_score:
-                                best_score = new_sc
-                                best_path = new_path
-
-            if not next_states:
-                break
-            beam = sorted(next_states.values(), key=lambda x: x[0], reverse=True)[:beam_width]
-
-        # Polish best route from this pass with 2-opt + cheapest-insertion
-        if best_path:
-            polished_sc, polished_path = _refine_path_2opt_and_insert(
-                best_path, d0, dist_mat, cand_vi, r_max_km, decay_rate, return_to_lander
-            )
-            if polished_sc > best_score:
-                best_score = polished_sc
-                best_path = polished_path
-
-    return best_score, best_path
 
 
 def _latlon_to_window_pixels(
@@ -306,14 +89,17 @@ def render_rover_route_image(
     r_max_km: float = 12.0,
     decay_rate: float = 0.15,
     return_to_lander: bool = False,
-    output_path: str = "output/rover_route.png",
+    output_path: str | None = None,
     ssis_csv: str = SSIS_CSV,
-    dpi: int = 300,
+    dpi: int = 200,
 ) -> dict:
     """
-    Generate a clean 2D surface image (no labels, axes, or key) showing the lunar
-    topography around the inputted point, the shaded landing dispersion zone, and
-    the highest-weight rover route within `r_max_km`.
+    Generate a clean, borderless 2D surface image (no labels, axes, or key) showing
+    the lunar topography around the inputted point, the shaded landing dispersion zone,
+    and the highest-weight rover route within `r_max_km`.
+
+    Renders into an in-memory `io.BytesIO` buffer (`image_bytes`). Only writes to disk
+    if `output_path` is explicitly provided.
     """
     if site_row is not None and len(site_row) >= 8:
         lat_val = float(site_row[2])
@@ -321,7 +107,7 @@ def render_rover_route_image(
         site_xyz = np.array([float(site_row[4]), float(site_row[5]), float(site_row[6])], dtype=np.float64)
         area_radius_m = float(site_row[7])
     elif lat is not None and lon is not None:
-        inspected_row, _ = inspect_point(lat=float(lat), lon=float(lon))
+        inspected_row = inspect_site_terrain(lat=float(lat), lon=float(lon))
         if not inspected_row:
             raise ValueError(f"No valid DEM elevation data at (lat={lat}, lon={lon}).")
         lat_val = float(inspected_row[2])
@@ -331,8 +117,9 @@ def render_rover_route_image(
     else:
         raise ValueError("Provide either `(lat, lon)` or a valid 12-element `site_row`.")
 
-    # 1. Load SSIs and find optimal route within r_max_km
-    ssis_df = pd.read_csv(ssis_csv) if os.path.exists(ssis_csv) else pd.DataFrame()
+    # 1. Load SSIs and find optimal multi-stop route within r_max_km
+    resolved_ssis = _resolve_csv_path(ssis_csv)
+    ssis_df = pd.read_csv(resolved_ssis) if os.path.exists(resolved_ssis) else pd.DataFrame()
     cand_df = pd.DataFrame()
     visited_order: list[int] = []
     raw_weight = 0.0
@@ -417,7 +204,7 @@ def render_rover_route_image(
         np.array([lat_val]), np.array([lon_val]), src, is_projected, r0, c0
     )
 
-    # Shaded landing zone ellipse (true physical radius, with minimum visual floor at wide zooms)
+    # Shaded landing zone dispersion ellipse
     min_vis_px = max(7.0, min(w_px, h_px) * 0.025)
     lz_rx = max(area_radius_m / dx_m, min_vis_px)
     lz_ry = max(area_radius_m / res_m, min_vis_px)
@@ -494,16 +281,28 @@ def render_rover_route_image(
     ax.set_ylim(h_px - 1, 0)
     ax.set_axis_off()
 
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    fig.savefig(output_path, dpi=dpi, bbox_inches="tight", pad_inches=0)
+    # Render directly into RAM buffer (zero disk writes unless output_path is set)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight", pad_inches=0)
     plt.close(fig)
+    png_bytes = buf.getvalue()
+
+    if output_path:
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        with open(output_path, "wb") as f:
+            f.write(png_bytes)
 
     return {
+        "image_bytes": png_bytes,
         "image_path": output_path,
         "lat": lat_val,
         "lon": lon_val,
         "raw_science_weight": round(raw_weight, 4),
-        "visited_ssi_ids": cand_df.iloc[visited_order]["ssi_id"].tolist() if (visited_order and "ssi_id" in cand_df.columns) else visited_order,
+        "visited_ssi_ids": (
+            cand_df.iloc[visited_order]["ssi_id"].tolist()
+            if (visited_order and "ssi_id" in cand_df.columns)
+            else visited_order
+        ),
     }
 
 
