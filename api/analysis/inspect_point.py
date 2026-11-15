@@ -21,7 +21,8 @@ HORIZON_MAX_DIST_M = 80_000.0  #[cite: 3]
 BASE_SITES_CSV = "processed_data/landing_sites.csv"  #[cite: 3]
 BASE_HORIZONS_CSV = "processed_data/landing_site_horizons.csv"
 CUSTOM_SITES_CSV = "processed_data/user_inspected_sites.csv"  #[cite: 3]
-CUSTOM_HORIZONS_CSV = "processed_data/user_horizon_profiles.csv"  #[cite: 3]
+CUSTOM_HORIZONS_CSV = "processed_data/user_horizon_profiles.csv"  #[cite: 3]#
+LANDING_SITES_CSV = "processed_data/landing_sites.csv"
 
 CSV_COLUMNS = [
     "site_id", "tier", "lat", "lon", "x_km", "y_km", "z_km",
