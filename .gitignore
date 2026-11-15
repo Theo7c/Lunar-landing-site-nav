@@ -221,3 +221,4 @@ __marimo__/
 
 # Ignore large raw NASA planetary datasets
 raw_data/
+processed_data/landing_site_horizons_cache.npz
