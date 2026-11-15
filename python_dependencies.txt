@@ -1,0 +1,19 @@
+# Web Framework & Server
+fastapi
+uvicorn[standard]
+python-dotenv
+
+# Scientific Computing & Data Processing
+numpy
+pandas
+scipy
+
+# Geospatial & Raster Processing (NASA LRO LOLA DEMs)
+rasterio
+
+# Visualization (2D Hillshaded Rover Route Maps)
+matplotlib
+
+# External APIs (JPL Horizons & Google Gemini)
+requests
+google-genai
