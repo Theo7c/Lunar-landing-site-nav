@@ -6,25 +6,31 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from dotenv import load_dotenv
+
+from api.analysis.GeminiAPICaller import GeneratePrefix, GenerateDefaultQuery, GetAIResponse, FormatResponse
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
-from analysis.horizon import GetHorizonsEphemeris
-from analysis.inspect_point import (
+from api.analysis.horizon import GetHorizonsEphemeris
+from api.analysis.inspect_point import (
     inspect_site_terrain,
     inspect_site_horizon,
     CSV_COLUMNS,
 )
-from analysis.score_calculator import (
+from api.analysis.score_calculator import (
     calculate_safety_score,
     calculate_ssi_score,
 )
-from analysis.scores_calculator import scores_calculator, DEFAULT_MAX_STOPS
-from analysis.render_route_map import render_rover_route_image
+from api.analysis.scores_calculator import scores_calculator, DEFAULT_MAX_STOPS
+from api.analysis.render_route_map import render_rover_route_image
 
 app = FastAPI()
+
+load_dotenv(".env")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 origins = [
     "http://localhost:5173",
@@ -494,4 +500,15 @@ async def all_sites_scores(
         },
         "timings_ms": timings_ms,
         "top_sites": top_sites,
+    }
+
+@app.get("/api/ai")
+def route(query):
+    prefix = GeneratePrefix()
+    response = GetAIResponse(GEMINI_API_KEY, query, prefix)
+    weights, coords, justifications = FormatResponse(response)
+    return {
+        "weights": weights,
+        "coords": coords,
+        "justifications": justifications,
     }
