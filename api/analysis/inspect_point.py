@@ -241,35 +241,41 @@ def _find_existing_horizon(site_id: str) -> list[float] | None:
 def inspect_site_terrain(
     lat: float,
     lon: float,
+    area_radius_m: float | None = None,
     dedup_radius_km: float = 0.15,
     save: bool = True,
 ) -> list:
     """
-    Checks existing landing_sites.csv and user_inspected_sites.csv first.
-    If not found within `dedup_radius_km`, extracts the touchdown patch from the DEM,
-    saves to processed_data/user_inspected_sites.csv, and returns the 12-element
-    site row list ordered by CSV_COLUMNS.
+    Checks existing landing_sites.csv and user_inspected_sites.csv first (when using
+    default radius or matching cached radius). Otherwise extracts a touchdown patch
+    sized to `area_radius_m` from the DEM and returns the 12-element site row list.
     """
     t0 = time.perf_counter()
-    lon = normalize_lon(lon)  #[cite: 3]
-    x_km, y_km, z_km = latlon_to_xyz(lat, lon)  #[cite: 3]
+    lon = normalize_lon(lon)
+    x_km, y_km, z_km = latlon_to_xyz(lat, lon)
 
     # 1. Check existing CSV datasets BEFORE opening/reading any DEM raster
     existing = _find_nearby_existing_site(x_km, y_km, z_km, dedup_radius_km)
     csv_ms = (time.perf_counter() - t0) * 1000.0
     if existing is not None:
-        print(f"[inspect_site_terrain] Cache HIT ({existing['site_id']}) in {csv_ms:.2f} ms")
-        return [existing[col_name] for col_name in CSV_COLUMNS]
+        cached_radius = float(existing["area_radius_m"])
+        if area_radius_m is None or abs(cached_radius - float(area_radius_m)) < 1.0:
+            print(f"[inspect_site_terrain] Cache HIT ({existing['site_id']}) in {csv_ms:.2f} ms")
+            return [existing[col_name] for col_name in CSV_COLUMNS]
 
-    # 2. Compute from DEM
+    # 2. Compute from DEM using the requested area_radius_m
     t_dem = time.perf_counter()
     is_south_pole = lat <= -80.0
     tier = "south_pole" if is_south_pole else "global"
-    src, dataset_path = get_dataset(SP_SOURCES if is_south_pole else GLOBAL_SOURCES)  #[cite: 3]
+    src, dataset_path = get_dataset(SP_SOURCES if is_south_pole else GLOBAL_SOURCES)
 
     row, col, res_m, is_projected = _locate_pixel(src, lat, lon, is_south_pole)
-    inner_half = max(3, int(round(250.0 / res_m))) if is_projected else 1
-    area_radius_m = 250 if is_projected else int(round(1.5 * res_m))  #[cite: 3]
+    effective_radius_m = (
+        float(area_radius_m)
+        if area_radius_m is not None
+        else (250.0 if is_projected else float(round(1.5 * res_m)))
+    )
+    inner_half = max(1, int(round(effective_radius_m / res_m)))
 
     pr0 = max(0, row - inner_half)
     pc0 = max(0, col - inner_half)
@@ -280,54 +286,55 @@ def inspect_site_terrain(
     if src.nodata is not None:
         patch[patch == src.nodata] = np.nan
     if np.nanmax(np.abs(patch)) < 50.0:
-        patch *= 1000.0  #[cite: 3]
+        patch *= 1000.0
 
     dx_m = res_m if is_projected else max(100.0, res_m * np.cos(np.radians(lat)))
     dz_dy, dz_dx = np.gradient(patch, res_m, dx_m)
-    slope_patch = np.degrees(np.arctan(np.hypot(dz_dx, dz_dy)))  #[cite: 3]
+    slope_patch = np.degrees(np.arctan(np.hypot(dz_dx, dz_dy)))
 
     elevation_m = float(np.nanmean(patch))
     max_slope_deg = float(np.nanmax(slope_patch))
     mean_slope_deg = float(np.nanmean(slope_patch))
-    roughness_m = float(np.nanstd(patch))  #[cite: 3]
+    roughness_m = float(np.nanstd(patch))
     dem_ms = (time.perf_counter() - t_dem) * 1000.0
 
     if np.isnan(elevation_m) or np.isnan(max_slope_deg):
-        return []  #[cite: 3]
+        return []
 
-    new_site_id = f"USER_{uuid.uuid4().hex[:6].upper()}"
+    site_id = str(existing["site_id"]) if existing is not None else f"USER_{uuid.uuid4().hex[:6].upper()}"
     row_dict = {
-        "site_id": new_site_id,
+        "site_id": site_id,
         "tier": tier,
         "lat": round(lat, 5),
         "lon": round(lon, 5),
         "x_km": round(x_km, 3),
         "y_km": round(y_km, 3),
         "z_km": round(z_km, 3),
-        "area_radius_m": area_radius_m,
+        "area_radius_m": int(round(effective_radius_m)),
         "elevation_m": round(elevation_m, 1),
         "max_slope_deg": round(max_slope_deg, 2),
         "mean_slope_deg": round(mean_slope_deg, 2),
         "roughness_m": round(roughness_m, 2),
-    }  #[cite: 3]
+    }
 
-    if save:
+    # Only persist default-radius brand-new sites so custom radii don't pollute base caches
+    if save and existing is None and area_radius_m is None:
         try:
             custom_path = _resolve_path(CUSTOM_SITES_CSV)
             os.makedirs(os.path.dirname(custom_path) or ".", exist_ok=True)
             file_exists = os.path.exists(custom_path)
             pd.DataFrame([row_dict])[CSV_COLUMNS].to_csv(
                 custom_path, mode="a", header=not file_exists, index=False
-            )  #[cite: 3]
+            )
         except OSError:
             pass
 
     total_ms = (time.perf_counter() - t0) * 1000.0
     print(
-        f"[inspect_site_terrain] Cache MISS ({lat:.4f}, {lon:.4f}) src='{dataset_path}' -> "
+        f"[inspect_site_terrain] DEM eval ({lat:.4f}, {lon:.4f}, r={effective_radius_m:.0f}m) src='{dataset_path}' -> "
         f"csv={csv_ms:.1f}ms | dem_patch={dem_ms:.1f}ms | total={total_ms:.1f}ms"
     )
-    return [row_dict[col_name] for col_name in CSV_COLUMNS]  #[cite: 3]
+    return [row_dict[col_name] for col_name in CSV_COLUMNS]
 
 
 # ==============================================================================

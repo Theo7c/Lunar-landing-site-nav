@@ -11,29 +11,29 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
-from analysis.horizon import GetHorizonsEphemeris  #[cite: 4]
-from analysis.inspect_point import (  #[cite: 3, 4]
+from analysis.horizon import GetHorizonsEphemeris
+from analysis.inspect_point import (
     inspect_site_terrain,
     inspect_site_horizon,
     CSV_COLUMNS,
 )
-from analysis.score_calculator import (  #[cite: 5]
+from analysis.score_calculator import (
     calculate_safety_score,
     calculate_ssi_score,
     calculate_astronomical_scores,
 )
-from analysis.scores_calculator import scores_calculator  #[cite: 6]
+from analysis.scores_calculator import scores_calculator
 from analysis.render_route_map import render_rover_route_image
 
-app = FastAPI()  #[cite: 4]
+app = FastAPI()
 
 origins = [
-    "http://localhost:5173",  #[cite: 4]
+    "http://localhost:5173",
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,  #[cite: 4]
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -42,30 +42,30 @@ app.add_middleware(
 
 
 def _format_time_window(time_start: str, time_end: str) -> tuple[str, str, str]:
-    dt0 = datetime.fromisoformat(time_start)  #[cite: 4]
-    t0 = dt0.strftime("%Y-%m-%d %H:%M")  #[cite: 4]
+    dt0 = datetime.fromisoformat(time_start)
+    t0 = dt0.strftime("%Y-%m-%d %H:%M")
 
-    dt1 = datetime.fromisoformat(time_end)  #[cite: 4]
-    t1 = dt1.strftime("%Y-%m-%d %H:%M")  #[cite: 4]
+    dt1 = datetime.fromisoformat(time_end)
+    t1 = dt1.strftime("%Y-%m-%d %H:%M")
 
-    delta_ms = abs((dt1 - dt0).total_seconds() * 1_000)  #[cite: 4]
+    delta_ms = abs((dt1 - dt0).total_seconds() * 1_000)
 
-    MINUTE_MS = 60 * 1000  #[cite: 4]
-    HOUR_MS = 60 * MINUTE_MS  #[cite: 4]
-    DAY_MS = 24 * HOUR_MS  #[cite: 4]
-    MONTH_MS = 30 * DAY_MS  #[cite: 4]
-    YEAR_MS = 12 * MONTH_MS  #[cite: 4]
+    MINUTE_MS = 60 * 1000
+    HOUR_MS = 60 * MINUTE_MS
+    DAY_MS = 24 * HOUR_MS
+    MONTH_MS = 30 * DAY_MS
+    YEAR_MS = 12 * MONTH_MS
 
-    if delta_ms < 2 * HOUR_MS:  #[cite: 4]
+    if delta_ms < 2 * HOUR_MS:
         resolution = "minute"
-    elif delta_ms < 7 * DAY_MS:  #[cite: 4]
+    elif delta_ms < 7 * DAY_MS:
         resolution = "hour"
-    elif delta_ms < 3 * MONTH_MS:  #[cite: 4]
+    elif delta_ms < 3 * MONTH_MS:
         resolution = "day"
-    elif delta_ms < 3 * YEAR_MS:  #[cite: 4]
+    elif delta_ms < 3 * YEAR_MS:
         resolution = "month"
     else:
-        resolution = "year"  #[cite: 4]
+        resolution = "year"
 
     return t0, t1, resolution
 
@@ -79,59 +79,60 @@ async def root(
     lng: float,
     time_start: str,
     time_end: str,
+    area_radius_m: float | None = None,
     max_slope_limit_deg: float = 15.0,
     mean_slope_limit_deg: float = 10.0,
     roughness_limit_m: float = 25.0,
     slope_weight: float = 0.60,
     r_max_km: float = 12.0,
     decay_rate: float = 0.15,
-    science_half_sat: float = 2.5,
+    science_half_sat: float = 5.0,
     return_to_lander: bool = False,
 ):
     t_start = time.perf_counter()
-    t0, t1, resolution = _format_time_window(time_start, time_end)  #[cite: 4]
+    t0, t1, resolution = _format_time_window(time_start, time_end)
 
-    # Section 1: Terrain lookup
+    # Section 1: Terrain patch inspection sized to lander's dispersion area_radius_m
     t_sec = time.perf_counter()
-    site_row = inspect_site_terrain(lat, lng)  #[cite: 3, 4]
+    site_row = inspect_site_terrain(lat, lng, area_radius_m=area_radius_m)
     if not site_row:
         raise HTTPException(status_code=404, detail="No valid DEM elevation data at this coordinate.")
     terrain_ms = (time.perf_counter() - t_sec) * 1000.0
 
-    alt = float(site_row[8]) / 1000.0  #[cite: 3, 4]
+    alt = float(site_row[8]) / 1000.0
 
     # Section 2: 360-degree horizon profile
     t_sec = time.perf_counter()
-    horizons_list = inspect_site_horizon(lat, lng, site_id=site_row[0])  #[cite: 3, 4]
-    horizons = np.asarray(horizons_list, dtype=float)  #[cite: 4]
+    horizons_list = inspect_site_horizon(lat, lng, site_id=site_row[0])
+    horizons = np.asarray(horizons_list, dtype=float)
     horizon_ms = (time.perf_counter() - t_sec) * 1000.0
 
     # Section 3: JPL Horizons Earth & Sun ephemeris HTTP requests
     t_sec = time.perf_counter()
-    df = GetHorizonsEphemeris("Earth", (lng, lat, alt), (t0, t1), (1, resolution))  #[cite: 4]
+    df = GetHorizonsEphemeris("Earth", (lng, lat, alt), (t0, t1), (1, resolution))
     earth_eph_ms = (time.perf_counter() - t_sec) * 1000.0
 
     t_sec = time.perf_counter()
-    sun_df = GetHorizonsEphemeris("Sun", (lng, lat, alt), (t0, t1), (1, resolution))  #[cite: 4]
+    sun_df = GetHorizonsEphemeris("Sun", (lng, lat, alt), (t0, t1), (1, resolution))
     sun_eph_ms = (time.perf_counter() - t_sec) * 1000.0
 
     # Section 4: Horizon interpolation onto ephemeris azimuths
     t_sec = time.perf_counter()
-    df["sunAz"] = sun_df["azimuth"]  #[cite: 4]
-    df["sunEl"] = sun_df["altitude"]  #[cite: 4]
-    df["earthAz"] = df["azimuth"]  #[cite: 4]
-    df["earthEl"] = df["altitude"]  #[cite: 4]
+    df["sunAz"] = sun_df["azimuth"]
+    df["sunEl"] = sun_df["altitude"]
+    df["earthAz"] = df["azimuth"]
+    df["earthEl"] = df["altitude"]
 
-    az_grid = np.arange(361, dtype=float)  #[cite: 4]
-    horizon_wrapped = np.append(horizons, horizons[0])  #[cite: 4]
-    df["sunHorizonEl"] = np.round(np.interp(np.mod(df["sunAz"], 360.0), az_grid, horizon_wrapped), 2)  #[cite: 4]
-    df["earthHorizonEl"] = np.round(np.interp(np.mod(df["earthAz"], 360.0), az_grid, horizon_wrapped), 2)  #[cite: 4]
-    df = df.drop(columns=["azimuth", "altitude"])  #[cite: 4]
+    az_grid = np.arange(361, dtype=float)
+    horizon_wrapped = np.append(horizons, horizons[0])
+    df["sunHorizonEl"] = np.round(np.interp(np.mod(df["sunAz"], 360.0), az_grid, horizon_wrapped), 2)
+    df["earthHorizonEl"] = np.round(np.interp(np.mod(df["earthAz"], 360.0), az_grid, horizon_wrapped), 2)
+    df = df.drop(columns=["azimuth", "altitude"])
     interp_ms = (time.perf_counter() - t_sec) * 1000.0
 
     # Section 5: Score calculations (safety, science routing, sun/earth visibility)
     t_sec = time.perf_counter()
-    s_safety = calculate_safety_score(  #[cite: 5]
+    s_safety = calculate_safety_score(
         site_row=site_row,
         max_slope_limit_deg=max_slope_limit_deg,
         mean_slope_limit_deg=mean_slope_limit_deg,
@@ -141,7 +142,7 @@ async def root(
     safety_ms = (time.perf_counter() - t_sec) * 1000.0
 
     t_sec = time.perf_counter()
-    s_science = calculate_ssi_score(  #[cite: 5]
+    s_science = calculate_ssi_score(
         site_row=site_row,
         r_max_km=r_max_km,
         decay_rate=decay_rate,
@@ -151,7 +152,7 @@ async def root(
     science_ms = (time.perf_counter() - t_sec) * 1000.0
 
     t_sec = time.perf_counter()
-    s_sun, s_earth = calculate_astronomical_scores(  #[cite: 5]
+    s_sun, s_earth = calculate_astronomical_scores(
         site_row=site_row,
         time_range=(t0, t1),
         time_resolution=(1, resolution),
@@ -159,7 +160,7 @@ async def root(
     )
     astro_score_ms = (time.perf_counter() - t_sec) * 1000.0
 
-    data = df.to_dict(orient="records")  #[cite: 4]
+    data = df.to_dict(orient="records")
     total_ms = (time.perf_counter() - t_start) * 1000.0
 
     timings_ms = {
@@ -173,17 +174,17 @@ async def root(
         "astro_score_ms": round(astro_score_ms, 2),
         "total_ms": round(total_ms, 2),
     }
-    print(f"[GET /] ({lat}, {lng}) -> {timings_ms}")
+    print(f"[GET /] ({lat}, {lng}, lz={site_row[7]}m) -> {timings_ms}")
 
     return {
-        "lat": lat,  #[cite: 4]
-        "lng": lng,  #[cite: 4]
-        "alt": alt,  #[cite: 4]
-        "data": data,  #[cite: 4]
-        "resolution": resolution,  #[cite: 4]
-        "site": dict(zip(CSV_COLUMNS, site_row)),  #[cite: 3]
-        "horizon_profile": horizons_list,  #[cite: 3]
-        "scores": {  #[cite: 5]
+        "lat": lat,
+        "lng": lng,
+        "alt": alt,
+        "data": data,
+        "resolution": resolution,
+        "site": dict(zip(CSV_COLUMNS, site_row)),
+        "horizon_profile": horizons_list,
+        "scores": {
             "s_safety": s_safety,
             "s_science": s_science,
             "s_sun": s_sun,
@@ -200,25 +201,26 @@ async def root(
 async def inspect_site_fast(
     lat: float,
     lng: float,
+    area_radius_m: float | None = None,
     max_slope_limit_deg: float = 15.0,
     mean_slope_limit_deg: float = 10.0,
     roughness_limit_m: float = 25.0,
     slope_weight: float = 0.60,
     r_max_km: float = 12.0,
     decay_rate: float = 0.15,
-    science_half_sat: float = 2.5,
+    science_half_sat: float = 5.0,
     return_to_lander: bool = False,
 ):
     t_start = time.perf_counter()
 
     t_sec = time.perf_counter()
-    site_row = inspect_site_terrain(lat, lng)  #[cite: 3]
+    site_row = inspect_site_terrain(lat, lng, area_radius_m=area_radius_m)
     if not site_row:
         raise HTTPException(status_code=404, detail="No valid DEM elevation data at this coordinate.")
     terrain_ms = (time.perf_counter() - t_sec) * 1000.0
 
     t_sec = time.perf_counter()
-    s_safety = calculate_safety_score(  #[cite: 5]
+    s_safety = calculate_safety_score(
         site_row=site_row,
         max_slope_limit_deg=max_slope_limit_deg,
         mean_slope_limit_deg=mean_slope_limit_deg,
@@ -228,7 +230,7 @@ async def inspect_site_fast(
     safety_ms = (time.perf_counter() - t_sec) * 1000.0
 
     t_sec = time.perf_counter()
-    s_science = calculate_ssi_score(  #[cite: 5]
+    s_science = calculate_ssi_score(
         site_row=site_row,
         r_max_km=r_max_km,
         decay_rate=decay_rate,
@@ -244,13 +246,13 @@ async def inspect_site_fast(
         "science_route_ms": round(science_ms, 2),
         "total_ms": round(total_ms, 2),
     }
-    print(f"[GET /api/site/inspect] ({lat}, {lng}) -> {timings_ms}")
+    print(f"[GET /api/site/inspect] ({lat}, {lng}, lz={site_row[7]}m) -> {timings_ms}")
 
     return {
         "lat": lat,
         "lng": lng,
-        "alt": float(site_row[8]) / 1000.0,  #[cite: 3]
-        "site": dict(zip(CSV_COLUMNS, site_row)),  #[cite: 3]
+        "alt": float(site_row[8]) / 1000.0,
+        "site": dict(zip(CSV_COLUMNS, site_row)),
         "scores": {
             "s_safety": s_safety,
             "s_science": s_science,
@@ -266,6 +268,7 @@ async def inspect_site_fast(
 async def get_route_map(
     lat: float,
     lng: float,
+    area_radius_m: float | None = None,
     r_max_km: float = 12.0,
     decay_rate: float = 0.15,
     return_to_lander: bool = False,
@@ -274,13 +277,14 @@ async def get_route_map(
     t_start = time.perf_counter()
 
     t_sec = time.perf_counter()
-    site_row = inspect_site_terrain(lat=lat, lon=lng)  #[cite: 3]
+    site_row = inspect_site_terrain(lat=lat, lon=lng, area_radius_m=area_radius_m)
     if not site_row:
         raise HTTPException(status_code=404, detail="No valid DEM elevation data at this coordinate.")
     terrain_ms = (time.perf_counter() - t_sec) * 1000.0
 
     result = render_rover_route_image(
         site_row=site_row,
+        area_radius_m=area_radius_m,
         r_max_km=r_max_km,
         decay_rate=decay_rate,
         return_to_lander=return_to_lander,
@@ -295,7 +299,7 @@ async def get_route_map(
         + [f"{k};dur={v:.1f}" for k, v in render_timings.items()]
         + [f"endpoint_total;dur={total_ms:.1f}"]
     )
-    print(f"[GET /api/site/route-map] ({lat}, {lng}) -> terrain={terrain_ms:.1f}ms, {render_timings}")
+    print(f"[GET /api/site/route-map] ({lat}, {lng}, lz={site_row[7]}m) -> terrain={terrain_ms:.1f}ms, {render_timings}")
 
     return Response(
         content=result["image_bytes"],
@@ -320,13 +324,14 @@ async def all_sites_scores(
     slope_weight: float = 0.60,
     r_max_km: float = 12.0,
     decay_rate: float = 0.15,
-    science_half_sat: float = 2.5,
+    science_half_sat: float = 5.0,
     return_to_lander: bool = False,
     filter_infeasible: bool = True,
 ):
+    """Batch-evaluates all sites across landing_sites.csv and user_inspected_sites.csv."""
     t_start = time.perf_counter()
-    t0, t1, resolution = _format_time_window(time_start, time_end)  #[cite: 4]
-    df = scores_calculator(  #[cite: 6]
+    t0, t1, resolution = _format_time_window(time_start, time_end)
+    df = scores_calculator(
         max_slope_limit_deg=max_slope_limit_deg,
         mean_slope_limit_deg=mean_slope_limit_deg,
         roughness_limit_m=roughness_limit_m,
