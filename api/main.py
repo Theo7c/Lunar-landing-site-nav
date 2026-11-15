@@ -7,24 +7,24 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
-from api.analysis.GeminiAPICaller import GeneratePrefix, GenerateDefaultQuery, GetAIResponse, FormatResponse
+from analysis.GeminiAPICaller import GeneratePrefix, GenerateDefaultQuery, GetAIResponse, FormatResponse
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
-from api.analysis.horizon import GetHorizonsEphemeris
-from api.analysis.inspect_point import (
+from analysis.horizon import GetHorizonsEphemeris
+from analysis.inspect_point import (
     inspect_site_terrain,
     inspect_site_horizon,
     CSV_COLUMNS,
 )
-from api.analysis.score_calculator import (
+from analysis.score_calculator import (
     calculate_safety_score,
     calculate_ssi_score,
 )
-from api.analysis.scores_calculator import scores_calculator, DEFAULT_MAX_STOPS
-from api.analysis.render_route_map import render_rover_route_image
+from analysis.scores_calculator import scores_calculator, DEFAULT_MAX_STOPS
+from analysis.render_route_map import render_rover_route_image
 
 app = FastAPI()
 
