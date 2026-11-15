@@ -20,4 +20,4 @@ export const SPACE_COLORS = [
     "#C3CAD9",  // lunar silver
 ];
 
-export const API_URL = "http://127.0.0.1:8000/"
+export const API_URL = "https://lunar-landing-site-nav.onrender.com/"
