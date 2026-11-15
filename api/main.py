@@ -34,6 +34,11 @@ origins = [
     "http://localhost:5173",
 ]
 
+frontend_url = os.getenv("FRONTEND_URL")
+if frontend_url:
+    # Support comma-separated URLs if you have multiple (e.g. preview + prod)
+    origins.extend([url.strip().rstrip("/") for url in frontend_url.split(",") if url.strip()])
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
