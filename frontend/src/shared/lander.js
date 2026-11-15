@@ -1,0 +1,42 @@
+export const LANDER_PRESETS = [
+    {
+        id: "micro",
+        label: "Micro-Lander (Unguided)",
+        area_radius_m: 1000,
+        max_slope_limit_deg: 8.0,
+        mean_slope_limit_deg: 5.0,
+        roughness_limit_m: 12.0,
+    },
+    {
+        id: "clps",
+        label: "Commercial CLPS-Class Lander",
+        area_radius_m: 500,
+        max_slope_limit_deg: 12.0,
+        mean_slope_limit_deg: 8.0,
+        roughness_limit_m: 20.0,
+    },
+    {
+        id: "standard",
+        label: "Standard Exploration Lander",
+        area_radius_m: 250,
+        max_slope_limit_deg: 15.0,
+        mean_slope_limit_deg: 10.0,
+        roughness_limit_m: 25.0,
+    },
+    {
+        id: "heavy_cargo",
+        label: "Heavy Cargo / Ascent Lander",
+        area_radius_m: 100,
+        max_slope_limit_deg: 18.0,
+        mean_slope_limit_deg: 12.0,
+        roughness_limit_m: 30.0,
+    },
+    {
+        id: "crewed",
+        label: "Crewed / Pinpoint Autonomous Lander",
+        area_radius_m: 50,
+        max_slope_limit_deg: 20.0,
+        mean_slope_limit_deg: 14.0,
+        roughness_limit_m: 35.0,
+    },
+];

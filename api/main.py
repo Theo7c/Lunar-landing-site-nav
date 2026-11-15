@@ -29,7 +29,7 @@ from api.analysis.render_route_map import render_rover_route_image
 
 app = FastAPI()
 
-load_dotenv(".env")
+load_dotenv("./api/.env")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 origins = [

@@ -1,0 +1,123 @@
+:root {
+  --text: #6b6375;
+  --text-h: #08060d;
+  --bg: #fff;
+  --border: #e5e4e7;
+  --code-bg: #f4f3ec;
+  --accent: #aa3bff;
+  --accent-bg: rgba(170, 59, 255, 0.1);
+  --accent-border: rgba(170, 59, 255, 0.5);
+  --social-bg: rgba(244, 243, 236, 0.5);
+  --shadow:
+    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+
+  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
+
+  font: 18px/145% var(--sans);
+  letter-spacing: 0.18px;
+  color-scheme: light dark;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  @media (max-width: 1024px) {
+    font-size: 16px;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #cdcdcd;
+    --text-h: #f3f4f6;
+    --bg: #000000;
+    --border: #2e303a;
+    --code-bg: #1f2028;
+    --accent: #c084fc;
+    --accent-bg: rgba(192, 132, 252, 0.15);
+    --accent-border: rgba(192, 132, 252, 0.5);
+    --social-bg: rgba(47, 48, 58, 0.5);
+    --shadow:
+      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
+  }
+
+  #social .button-icon {
+    filter: invert(1) brightness(2);
+  }
+}
+
+body {
+  width: 100vw;
+  padding: 0;
+  margin: 0;
+}
+
+/* Site Selector */
+.site-selector__wrapper {
+  background: #000000;
+  overflow: scroll;
+  display: flex;
+  width: 100%;
+  height: fit-content;
+}
+
+.site-selector__container {
+  padding: 1em;
+  display: flex;
+  width: 100%;
+  height: fit-content;
+  justify-content: flex-start;
+  align-items: center;
+  flex-direction: column;
+  background-color: #171717;
+  border: 5px solid #272727;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+.site-selector__row {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-top: .25em;
+}
+
+.site-selector__input__header {
+  line-height: 0;
+}
+
+.site-selector__input {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.site-selector__input__label {
+  font-size: 14px;
+  margin: 0 .5em 0 .5em;
+}
+
+.site-selector__input__input {
+  outline: none;
+  border: none;
+  background: #212123;
+  font-family: inherit;
+  padding: .5em;
+  border-radius: .2em;
+}
+
+.site-selector__button {
+  background: #F19E39;
+  margin-left: 1em;
+  padding: .5em;
+}
+
+.site-selector__justification {
+  width: 40vw;
+  font-size: 12px;
+}
