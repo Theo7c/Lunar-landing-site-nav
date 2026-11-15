@@ -1,8 +1,15 @@
-# Lunar Landing Site Selection — Backend & Data Generation Pipeline
+# Lunar Navigator — Lunar Mission Landing Site Dashboard
 
-This directory contains the offline geospatial data-generation scripts and the FastAPI backend powering the Lunar Landing Site Selection platform. It processes NASA LRO LOLA Digital Elevation Models (DEMs) and planetary science catalogs into fast spatial lookup tables, computes 360-degree spherical horizon profiles, interfaces with NASA's JPL Horizons API and Google Gemini, and dynamically renders 2D topographic rover traverse maps.
+**Lunar Navigator** is an interactive web platform built for the NASA Space Apps Challenge that lets users identify, evaluate, and compare candidate landing sites anywhere on the Moon. Using an interactive 3D lunar globe, you can configure mission dates, spacecraft capabilities, and priority weights—or describe your mission in plain English to an AI assistant—to rank landing sites, inspect live Sun and Earth visibility windows against the local horizon, and view optimal 2D rover traverse maps.
+
+* **Live Website:** [lunar.isaacbarker.net](https://lunar.isaacbarker.net) *(Note: Due to free-tier backend hosting, the website may be slow to respond on the first request.)*
+* **Tutorial & Walkthrough Slides:** [Lunar Landing Navigator Presentation](https://docs.google.com/presentation/d/19_Sqne3R7QvpSoGswTROh0oYrZc-0soy/edit?usp=sharing&ouid=114225838610489975589&rtpof=true&sd=true) *(Provides a visual guide to the Mission Window, Capabilities, AI Weights, 3D Moon, and site comparison cards.)*
 
 ---
+
+## Backend & Data Generation Pipeline
+
+This repository contains the offline geospatial data-generation scripts and the FastAPI backend powering Lunar Navigator. It processes NASA LRO LOLA Digital Elevation Models (DEMs) and planetary science catalogs into fast spatial lookup tables, computes 360-degree spherical horizon profiles, interfaces with NASA's JPL Horizons API and Google Gemini, and dynamically renders 2D topographic rover traverse maps.
 
 ## 1. Architecture Overview
 
@@ -14,8 +21,6 @@ The backend is split into two layers:
    * `build_ssis.py` & `expanded_ssis.py` — Builds and expands a unified catalog of Sites of Scientific Interest (SSIs) with standardized intrinsic scientific value scores ($V_i \in [1.0, 5.0]$) and 3D Cartesian coordinates for fast spatial queries.
 2. **Real-Time FastAPI Service (`main.py` & `api/analysis/`)**:
    * Serves batch Multi-Criteria Decision Making (MCDM) rankings, on-demand single-site terrain and horizon extraction (`inspect_point.py`), live JPL Horizons Sun/Earth ephemeris (`horizon.py`), Gemini AI mission-weight generation (`GeminiAPICaller.py`), and in-memory 2D hillshaded rover route maps (`render_route_map.py`).
-
----
 
 ## 2. Directory Structure
 
@@ -52,14 +57,14 @@ The backend is split into two layers:
     └── user_horizon_profiles.csv          # Persisted custom user-clicked horizons
 ```
 
----
-
 ## 3. Prerequisites & Installation
 
 ### Python Dependencies
 Install the required packages (Python 3.10+ recommended):
 
 ```bash
+pip install -r requirements.txt
+# or install directly:
 pip install fastapi uvicorn numpy pandas scipy rasterio matplotlib requests python-dotenv google-genai
 ```
 
@@ -76,8 +81,6 @@ Download the required NASA LRO LOLA / PGDA datasets into `raw_data/`:
 * **South Pole DEM:** `raw_data/south_pole/LDEM_80S_80MPP_ADJ.tiff` ($80\text{ m/px}$ polar stereographic DEM).
 * **South Pole PSR Catalog:** `raw_data/south_pole/LPSR_80S_20MPP_ADJ_1km2.csv` (and optionally `LPSR_80S_20MPP_ADJ.csv` for sub-km micro-PSRs).
 * **Optional LROC Pits:** `raw_data/expanded_ssis/lroc_lunar_pits.csv`.
-
----
 
 ## 4. Data Generation Pipeline
 
@@ -104,8 +107,6 @@ python expanded_ssis.py
 * **Spherical Horizon Ray-Casting (`generate_horizons.py`):** Computes tangent-plane horizon elevation angles across 360 azimuths ($0^\circ$–$359^\circ$) out to $80\text{ km}$ accounting for lunar curvature ($R_{\text{Moon}} = 1,737.4\text{ km}$). South Pole sites merge far-field global rays with high-resolution $80\text{ m/px}$ near-field rays ($< 5\text{ km}$).
 * **3D Cartesian Coordinates (`x_km`, `y_km`, `z_km`):** Both landing sites and SSIs are projected into Moon-centered 3D Cartesian space so rover range queries and spatial deduplication run in milliseconds via `scipy.spatial.cKDTree` without polar distortion.
 
----
-
 ## 5. Running the FastAPI Server
 
 Start the development server (CORS is configured for `http://localhost:5173` by default):
@@ -113,8 +114,6 @@ Start the development server (CORS is configured for `http://localhost:5173` by 
 ```bash
 uvicorn main:app --reload --port 8000
 ```
-
----
 
 ## 6. API Endpoints
 
@@ -132,8 +131,6 @@ You can also test the 2D route renderer directly from the command line:
 ```bash
 python api/analysis/render_route_map.py --lat -89.68 --lon -130.0 --range-km 12 --size-px 300 --out output/shackleton_route.png
 ```
-
----
 
 ## 7. Performance & Caching
 * **Binary Horizon Cache:** On first lookup, `inspect_point.py` compiles `landing_site_horizons.csv` into `landing_site_horizons_cache.npz` (automatically invalidated if the CSV is modified) for near-instantaneous memory-mapped lookups.
