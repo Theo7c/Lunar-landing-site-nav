@@ -8,7 +8,7 @@ export const inputs = $state({
     "science": 0.25,
     "sun": 0.25,
     "earth": 0.25,
-    "roverDist": 100,
+    "roverDist": 10,
     "return": false,
     "lander": { ...LANDER_PRESETS.find(l => l.id === "standard") },
     "geminiPrompt": ""
