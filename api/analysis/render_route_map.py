@@ -2,10 +2,12 @@ import argparse
 import io
 import os
 import sys
+import time
 import warnings
 
 import matplotlib
 matplotlib.use("Agg")
+import matplotlib.patheffects as path_effects
 import matplotlib.pyplot as plt
 from matplotlib.colors import LightSource
 from matplotlib.patches import Ellipse
@@ -57,6 +59,11 @@ except ImportError:
 
 warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
 
+_NICE_SCALE_STEPS_M = np.array(
+    [100, 200, 250, 500, 1_000, 2_000, 2_500, 5_000, 10_000, 20_000, 25_000, 50_000, 100_000],
+    dtype=np.float64,
+)
+
 
 def _latlon_to_window_pixels(
     lats: np.ndarray,
@@ -82,6 +89,50 @@ def _latlon_to_window_pixels(
     return cols - c0, rows - r0
 
 
+def _draw_scale_bar(ax: plt.Axes, w_px: int, h_px: int, dx_m: float) -> None:
+    """Draw a compact, high-contrast metric scale bar in the bottom-left corner."""
+    if w_px <= 10 or h_px <= 10 or dx_m <= 0.0:
+        return
+
+    target_m = (w_px * dx_m) * 0.18
+    idx = int(np.argmin(np.abs(_NICE_SCALE_STEPS_M - target_m)))
+    scale_m = float(_NICE_SCALE_STEPS_M[idx])
+    bar_px = scale_m / dx_m
+
+    if bar_px > w_px * 0.35 and idx > 0:
+        scale_m = float(_NICE_SCALE_STEPS_M[idx - 1])
+        bar_px = scale_m / dx_m
+    elif bar_px < w_px * 0.08 and idx < len(_NICE_SCALE_STEPS_M) - 1:
+        scale_m = float(_NICE_SCALE_STEPS_M[idx + 1])
+        bar_px = scale_m / dx_m
+
+    label = f"{int(round(scale_m / 1000.0))} km" if scale_m >= 1000.0 else f"{int(round(scale_m))} m"
+
+    x0 = w_px * 0.045
+    x1 = x0 + bar_px
+    y0 = h_px * 0.945
+    tick_h = max(2.5, h_px * 0.011)
+
+    stroke = [path_effects.Stroke(linewidth=3.2, foreground="#020617"), path_effects.Normal()]
+
+    ax.plot([x0, x1], [y0, y0], color="#ffffff", linewidth=1.6, solid_capstyle="butt", path_effects=stroke, zorder=9)
+    ax.plot([x0, x0], [y0 - tick_h, y0 + tick_h], color="#ffffff", linewidth=1.5, path_effects=stroke, zorder=9)
+    ax.plot([x1, x1], [y0 - tick_h, y0 + tick_h], color="#ffffff", linewidth=1.5, path_effects=stroke, zorder=9)
+
+    txt = ax.text(
+        0.5 * (x0 + x1),
+        y0 - tick_h * 1.4,
+        label,
+        color="#ffffff",
+        fontsize=8.5,
+        fontweight="bold",
+        ha="center",
+        va="bottom",
+        zorder=10,
+    )
+    txt.set_path_effects([path_effects.Stroke(linewidth=2.4, foreground="#020617"), path_effects.Normal()])
+
+
 def render_rover_route_image(
     lat: float | None = None,
     lon: float | None = None,
@@ -89,18 +140,23 @@ def render_rover_route_image(
     r_max_km: float = 12.0,
     decay_rate: float = 0.15,
     return_to_lander: bool = False,
+    show_scale_bar: bool = True,
     output_path: str | None = None,
     ssis_csv: str = SSIS_CSV,
     dpi: int = 200,
 ) -> dict:
     """
-    Generate a clean, borderless 2D surface image (no labels, axes, or key) showing
-    the lunar topography around the inputted point, the shaded landing dispersion zone,
-    and the highest-weight rover route within `r_max_km`.
+    Generate a clean, borderless 2D surface image showing the lunar topography around
+    the inputted point, the true-to-scale shaded landing dispersion zone, the
+    highest-weight rover route within `r_max_km`, and a compact metric scale bar.
 
     Renders into an in-memory `io.BytesIO` buffer (`image_bytes`). Only writes to disk
     if `output_path` is explicitly provided.
     """
+    t_start = time.perf_counter()
+
+    # Section 1: Site coordinate / terrain resolution
+    t_sec = time.perf_counter()
     if site_row is not None and len(site_row) >= 8:
         lat_val = float(site_row[2])
         lon_val = normalize_lon(float(site_row[3]))
@@ -116,8 +172,10 @@ def render_rover_route_image(
         area_radius_m = float(inspected_row[7])
     else:
         raise ValueError("Provide either `(lat, lon)` or a valid 12-element `site_row`.")
+    site_lookup_ms = (time.perf_counter() - t_sec) * 1000.0
 
-    # 1. Load SSIs and find optimal multi-stop route within r_max_km
+    # Section 2: Load SSIs and find optimal multi-stop route within r_max_km
+    t_sec = time.perf_counter()
     resolved_ssis = _resolve_csv_path(ssis_csv)
     ssis_df = pd.read_csv(resolved_ssis) if os.path.exists(resolved_ssis) else pd.DataFrame()
     cand_df = pd.DataFrame()
@@ -140,8 +198,10 @@ def render_rover_route_image(
                 return_to_lander=return_to_lander,
             )
             cand_df = ssis_df.iloc[nbr_arr].reset_index(drop=True)
+    route_solve_ms = (time.perf_counter() - t_sec) * 1000.0
 
-    # 2. Extract 2D DEM window covering 1.35x the rover range
+    # Section 3: Extract 2D DEM window covering 1.35x the rover range
+    t_sec = time.perf_counter()
     is_south_pole = lat_val <= -80.0
     src, _ = get_dataset(SP_SOURCES if is_south_pole else GLOBAL_SOURCES)
     is_projected = is_south_pole and (src.crs is not None)
@@ -179,8 +239,10 @@ def render_rover_route_image(
 
     if np.isnan(dem_patch).any():
         dem_patch = np.where(np.isnan(dem_patch), float(np.nanmedian(dem_patch)), dem_patch)
+    dem_read_ms = (time.perf_counter() - t_sec) * 1000.0
 
-    # 3. Render shaded relief + shaded landing zone + rover path (no labels/axes/key)
+    # Section 4: Hillshade + Matplotlib plotting + PNG buffer encoding
+    t_sec = time.perf_counter()
     dx_m = res_m if is_projected else max(50.0, res_m * np.cos(np.radians(lat_val)))
     ls = LightSource(azdeg=315, altdeg=35)
     shaded = ls.shade(
@@ -204,10 +266,9 @@ def render_rover_route_image(
         np.array([lat_val]), np.array([lon_val]), src, is_projected, r0, c0
     )
 
-    # Shaded landing zone dispersion ellipse
-    min_vis_px = max(7.0, min(w_px, h_px) * 0.025)
-    lz_rx = max(area_radius_m / dx_m, min_vis_px)
-    lz_ry = max(area_radius_m / res_m, min_vis_px)
+    # True-to-scale shaded landing zone dispersion ellipse
+    lz_rx = max(0.5, area_radius_m / dx_m)
+    lz_ry = max(0.5, area_radius_m / res_m)
     landing_zone_patch = Ellipse(
         xy=(float(lander_x[0]), float(lander_y[0])),
         width=2.0 * lz_rx,
@@ -215,7 +276,7 @@ def render_rover_route_image(
         facecolor="#ef4444",
         alpha=0.28,
         edgecolor="#fca5a5",
-        linewidth=1.3,
+        linewidth=1.0,
         zorder=3.5,
     )
     ax.add_patch(landing_zone_patch)
@@ -237,11 +298,11 @@ def render_rover_route_image(
             ax.scatter(
                 cand_x[unvisited_mask],
                 cand_y[unvisited_mask],
-                s=22,
+                s=11,
                 c="#94a3b8",
                 edgecolors="#0f172a",
-                linewidths=0.6,
-                alpha=0.8,
+                linewidths=0.45,
+                alpha=0.85,
                 zorder=3,
             )
 
@@ -252,30 +313,33 @@ def render_rover_route_image(
                 route_x = np.append(route_x, lander_x[0])
                 route_y = np.append(route_y, lander_y[0])
 
-            ax.plot(route_x, route_y, color="#020617", linewidth=3.4, solid_capstyle="round", zorder=4)
-            ax.plot(route_x, route_y, color="#38bdf8", linewidth=1.9, solid_capstyle="round", zorder=5)
+            ax.plot(route_x, route_y, color="#020617", linewidth=2.8, solid_capstyle="round", zorder=4)
+            ax.plot(route_x, route_y, color="#38bdf8", linewidth=1.6, solid_capstyle="round", zorder=5)
 
             ax.scatter(
                 cand_x[visited_order],
                 cand_y[visited_order],
-                s=48,
+                s=24,
                 c="#facc15",
                 edgecolors="#020617",
-                linewidths=1.0,
+                linewidths=0.75,
                 zorder=6,
             )
 
-    # Lander center marker
+    # Compact lander center marker
     ax.scatter(
         lander_x,
         lander_y,
-        s=90,
+        s=22,
         marker="^",
         c="#ef4444",
         edgecolors="#ffffff",
-        linewidths=1.1,
+        linewidths=0.6,
         zorder=7,
     )
+
+    if show_scale_bar:
+        _draw_scale_bar(ax, w_px=w_px, h_px=h_px, dx_m=dx_m)
 
     ax.set_xlim(0, w_px - 1)
     ax.set_ylim(h_px - 1, 0)
@@ -286,11 +350,22 @@ def render_rover_route_image(
     fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight", pad_inches=0)
     plt.close(fig)
     png_bytes = buf.getvalue()
+    matplotlib_render_ms = (time.perf_counter() - t_sec) * 1000.0
 
     if output_path:
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         with open(output_path, "wb") as f:
             f.write(png_bytes)
+
+    total_ms = (time.perf_counter() - t_start) * 1000.0
+    timings_ms = {
+        "site_lookup_ms": round(site_lookup_ms, 2),
+        "route_solve_ms": round(route_solve_ms, 2),
+        "dem_read_ms": round(dem_read_ms, 2),
+        "matplotlib_render_ms": round(matplotlib_render_ms, 2),
+        "total_ms": round(total_ms, 2),
+    }
+    print(f"[render_route_map] ({lat_val}, {lon_val}, r={r_max_km}km) -> {timings_ms}")
 
     return {
         "image_bytes": png_bytes,
@@ -303,15 +378,17 @@ def render_rover_route_image(
             if (visited_order and "ssi_id" in cand_df.columns)
             else visited_order
         ),
+        "timings_ms": timings_ms,
     }
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Render a label-free 2D lunar surface rover route map.")
+    parser = argparse.ArgumentParser(description="Render a 2D lunar surface rover route map with a scale bar.")
     parser.add_argument("--lat", type=float, default=-89.6800, help="Latitude (-90 to 90)")
     parser.add_argument("--lon", type=float, default=-130.0000, help="Longitude (-180 to 180)")
     parser.add_argument("--range-km", type=float, default=120.0, help="Max rover travel distance (km)")
     parser.add_argument("--return-to-lander", action="store_true", help="Require closed loop back to lander")
+    parser.add_argument("--no-scale-bar", action="store_true", help="Hide the scale bar")
     parser.add_argument("--out", type=str, default="output/rover_route.png", help="Output PNG path")
     args = parser.parse_args()
 
@@ -320,6 +397,7 @@ if __name__ == "__main__":
         lon=args.lon,
         r_max_km=args.range_km,
         return_to_lander=args.return_to_lander,
+        show_scale_bar=not args.no_scale_bar,
         output_path=args.out,
     )
     print(f"Saved route image to {res['image_path']} (visited={len(res['visited_ssi_ids'])}, weight={res['raw_science_weight']})")

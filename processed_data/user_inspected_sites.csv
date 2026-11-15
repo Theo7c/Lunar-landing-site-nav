@@ -1,2 +1,3 @@
 site_id,tier,lat,lon,x_km,y_km,z_km,area_radius_m,elevation_m,max_slope_deg,mean_slope_deg,roughness_m
 USER_5D4918,global,-78.4521,-130.489,-225.831,-264.516,-1702.231,711,-1930.2,4.34,2.47,14.0
+USER_8A6BF2,south_pole,-85.4,45.2,98.182,98.87,-1731.804,250,-355.7,18.81,13.34,38.54

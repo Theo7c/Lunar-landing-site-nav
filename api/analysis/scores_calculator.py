@@ -456,7 +456,7 @@ def scores_calculator(
     slope_weight: float = 0.60,
     r_max_km: float = 12.0,
     decay_rate: float = 0.15,
-    science_half_sat: float = 5.0,
+    science_half_sat: float = 2.5,
     return_to_lander: bool = False,
     time_range: tuple[str, str] = ("2027-01-01", "2027-01-30"),
     time_resolution: tuple[int, str] = (1, "hour"),

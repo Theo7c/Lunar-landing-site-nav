@@ -1,209 +1,141 @@
-import inspect
+import argparse
+import io
 import os
 import sys
+import time
+from pathlib import Path
 import numpy as np
-import pandas as pd
+from PIL import Image
 
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-for rel_path in ("", "..", os.path.join("..", "..")):
-    candidate_dir = os.path.abspath(os.path.join(CURRENT_DIR, rel_path))
-    if candidate_dir not in sys.path:
-        sys.path.insert(0, candidate_dir)
+# Resolve repository root so "processed_data/..." and "raw_data/..." paths work from any directory
+CURRENT_FILE = Path(__file__).resolve()
+PROJECT_ROOT = next(
+    (p for p in CURRENT_FILE.parents if (p / "processed_data").exists() or (p / ".git").exists()),
+    CURRENT_FILE.parents[2],
+)
+os.chdir(PROJECT_ROOT)
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-try:
-    from api.analysis.score_calculator import score_calculator
-    from api.analysis.scores_calculator import load_sites_and_ssis
-except ImportError:
-    from score_calculator import score_calculator
-    from scores_calculator import load_sites_and_ssis
-
-try:
-    from api.analysis.inspect_point import inspect_site_horizon
-except ImportError:
-    try:
-        from inspect_point import inspect_site_horizon
-    except ImportError:
-        inspect_site_horizon = None
+from api.analysis.inspect_point import (  # noqa: E402
+    inspect_site_terrain,
+    inspect_site_horizon,
+    CSV_COLUMNS,
+)
+from api.analysis.score_calculator import score_calculator  # noqa: E402
+from api.analysis.render_route_map import render_rover_route_image  # noqa: E402
 
 
-LUNAR_RADIUS_KM = 1737.4
-
-
-def _lat_lon_alt_to_xyz_km(lat: float, lon: float, elevation_m: float = 0.0) -> tuple[float, float, float]:
-    r_km = LUNAR_RADIUS_KM + (float(elevation_m) / 1000.0)
-    lat_rad = np.radians(float(lat))
-    lon_rad = np.radians(float(lon))
-    x_km = float(r_km * np.cos(lat_rad) * np.cos(lon_rad))
-    y_km = float(r_km * np.cos(lat_rad) * np.sin(lon_rad))
-    z_km = float(r_km * np.sin(lat_rad))
-    return x_km, y_km, z_km
-
-
-def _inspect_point_data(lat: float, lon: float) -> tuple[np.ndarray | None, dict]:
-    """Call inspect_site_horizon(lat, lon) if available and parse horizon array + metadata."""
-    if inspect_site_horizon is None:
-        return None, {}
-
-    params = inspect.signature(inspect_site_horizon).parameters
-    if "lat" in params and "lon" in params:
-        result = inspect_site_horizon(lat=float(lat), lon=float(lon))
-    else:
-        result = inspect_site_horizon(float(lat), float(lon))
-
-    horizon_arr = None
-    metadata = {}
-
-    if isinstance(result, np.ndarray) and result.shape == (360,):
-        horizon_arr = result.astype(np.float64)
-    elif isinstance(result, (list, tuple)):
-        if len(result) == 360 and not isinstance(result[0], (list, tuple, dict, np.ndarray)):
-            horizon_arr = np.asarray(result, dtype=np.float64)
-        else:
-            for item in result:
-                if isinstance(item, np.ndarray) and item.shape == (360,):
-                    horizon_arr = item.astype(np.float64)
-                elif isinstance(item, (list, tuple)) and len(item) == 360:
-                    horizon_arr = np.asarray(item, dtype=np.float64)
-                elif isinstance(item, dict):
-                    metadata.update(item)
-    elif isinstance(result, dict):
-        metadata = dict(result)
-        for key in ("horizonAlt_Az", "horizon_profile", "horizon", "horizon_angles", "elevations", "profile"):
-            if key in result:
-                horizon_arr = np.asarray(result[key], dtype=np.float64)
-                break
-        if horizon_arr is None:
-            for val in result.values():
-                if isinstance(val, (list, tuple, np.ndarray)):
-                    arr = np.asarray(val)
-                    if arr.shape == (360,):
-                        horizon_arr = arr.astype(np.float64)
-                        break
-
-    return horizon_arr, metadata
-
-
-def _build_site_row_for_point(
-    lat: float,
-    lon: float,
-    elevation_m: float | None = None,
-    max_slope_deg: float | None = None,
-    mean_slope_deg: float | None = None,
-    roughness_m: float | None = None,
-) -> tuple[list, np.ndarray | None, str]:
-    """
-    Build the 12-element site_row required by score_calculator:
-    [0] site_id, [1] tier, [2] lat, [3] lon, [4] x_km, [5] y_km, [6] z_km,
-    [7] area_radius_m, [8] elevation_m, [9] max_slope_deg, [10] mean_slope_deg, [11] roughness_m
-    """
-    horizon_arr, meta = _inspect_point_data(lat, lon)
-
-    # Check if this coordinate already exists in landing_sites.csv or user_inspected_sites.csv
-    sites_df, _ = load_sites_and_ssis()
-    matched_csv_row = None
-    if not sites_df.empty and "lat" in sites_df.columns and "lon" in sites_df.columns:
-        dists = np.hypot(sites_df["lat"].to_numpy(dtype=float) - float(lat), sites_df["lon"].to_numpy(dtype=float) - float(lon))
-        min_idx = int(np.argmin(dists))
-        if dists[min_idx] < 1e-4:
-            matched_csv_row = sites_df.iloc[min_idx]
-
-    if matched_csv_row is not None:
-        source_label = f"Matched existing site `{matched_csv_row.get('site_id', 'unknown')}` from CSV"
-        site_id = str(matched_csv_row.get("site_id", f"TEST_{lat:.4f}_{lon:.4f}"))
-        tier = str(matched_csv_row.get("tier", "custom"))
-        area_radius_m = float(matched_csv_row.get("area_radius_m", 100.0))
-        elev = float(elevation_m) if elevation_m is not None else float(matched_csv_row.get("elevation_m", 0.0))
-        max_slp = float(max_slope_deg) if max_slope_deg is not None else float(matched_csv_row.get("max_slope_deg", 5.0))
-        mean_slp = float(mean_slope_deg) if mean_slope_deg is not None else float(matched_csv_row.get("mean_slope_deg", 2.5))
-        rough = float(roughness_m) if roughness_m is not None else float(matched_csv_row.get("roughness_m", 4.0))
-        x_km = float(matched_csv_row.get("x_km", _lat_lon_alt_to_xyz_km(lat, lon, elev)[0]))
-        y_km = float(matched_csv_row.get("y_km", _lat_lon_alt_to_xyz_km(lat, lon, elev)[1]))
-        z_km = float(matched_csv_row.get("z_km", _lat_lon_alt_to_xyz_km(lat, lon, elev)[2]))
-    else:
-        source_label = "Inspected custom coordinate"
-        site_id = str(meta.get("site_id", f"POINT_{lat:.4f}_{lon:.4f}"))
-        tier = str(meta.get("tier", "custom"))
-        area_radius_m = float(meta.get("area_radius_m", 100.0))
-        elev = float(elevation_m) if elevation_m is not None else float(meta.get("elevation_m", 0.0))
-        max_slp = float(max_slope_deg) if max_slope_deg is not None else float(meta.get("max_slope_deg", 5.0))
-        mean_slp = float(mean_slope_deg) if mean_slope_deg is not None else float(meta.get("mean_slope_deg", 2.5))
-        rough = float(roughness_m) if roughness_m is not None else float(meta.get("roughness_m", 4.0))
-        x_km, y_km, z_km = _lat_lon_alt_to_xyz_km(lat, lon, elev)
-
-    site_row = [
-        site_id,
-        tier,
-        float(lat),
-        float(lon),
-        x_km,
-        y_km,
-        z_km,
-        area_radius_m,
-        elev,
-        max_slp,
-        mean_slp,
-        rough,
-    ]
-    return site_row, horizon_arr, source_label
-
-
-def test_point_scores(
-    lat: float,
-    lon: float,
-    time_range: tuple[str, str] = ("2027-01-01", "2027-01-30"),
-    time_resolution: tuple[int, str] = (1, "hour"),
-    elevation_m: float | None = None,
-    max_slope_deg: float | None = None,
-    mean_slope_deg: float | None = None,
-    roughness_m: float | None = None,
+def test_score_and_show_image(
+    lat: float = -89.6800,
+    lon: float = -130.0000,
     r_max_km: float = 12.0,
-) -> tuple[float, float, float, float]:
+    decay_rate: float = 0.15,
+    science_half_sat: float = 2.5,
+    return_to_lander: bool = False,
+    time_range: tuple[str, str] = ("2027-01-01 00:00", "2027-01-30 00:00"),
+    time_resolution: tuple[int, str] = (1, "hour"),
+    output_path: str | None = None,
+    show_image: bool = True,
+) -> dict:
     """
-    Computes and prints all 4 scores (s_safety, s_science, s_sun, s_earth)
-    for a given lunar coordinate (lat, lon).
+    Inspects (lat, lon), calculates all 4 mission scores (safety, science, sun, earth),
+    renders the 2D lunar surface landing zone & rover route map, and displays the image.
     """
-    site_row, horizon_arr, source_label = _build_site_row_for_point(
-        lat=lat,
-        lon=lon,
-        elevation_m=elevation_m,
-        max_slope_deg=max_slope_deg,
-        mean_slope_deg=mean_slope_deg,
-        roughness_m=roughness_m,
-    )
+    # 1. Inspect terrain & 360-degree horizon profile
+    t0 = time.perf_counter()
+    site_row = inspect_site_terrain(lat=lat, lon=lon)
+    if not site_row:
+        raise ValueError(f"No valid DEM elevation data at (lat={lat}, lon={lon}).")
+    terrain_ms = (time.perf_counter() - t0) * 1000.0
 
+    t1 = time.perf_counter()
+    horizons_list = inspect_site_horizon(lat=lat, lon=lon, site_id=site_row[0])
+    horizons_arr = np.asarray(horizons_list, dtype=np.float64)
+    horizon_ms = (time.perf_counter() - t1) * 1000.0
+
+    # 2. Calculate all 4 normalized scores in [0.0, 1.0]
+    t2 = time.perf_counter()
     s_safety, s_science, s_sun, s_earth = score_calculator(
         site_row=site_row,
         r_max_km=r_max_km,
+        decay_rate=decay_rate,
+        science_half_sat=science_half_sat,
+        return_to_lander=return_to_lander,
         time_range=time_range,
         time_resolution=time_resolution,
-        horizon_profile=horizon_arr,
+        horizon_profile=horizons_arr,
+    )
+    score_ms = (time.perf_counter() - t2) * 1000.0
+
+    # 3. Render 2D landing zone & rover path map in memory
+    t3 = time.perf_counter()
+    render_res = render_rover_route_image(
+        site_row=site_row,
+        r_max_km=r_max_km,
+        decay_rate=decay_rate,
+        return_to_lander=return_to_lander,
+        output_path=output_path,
+    )
+    render_ms = (time.perf_counter() - t3) * 1000.0
+
+    # 4. Print summary diagnostics
+    print(f"=== Lunar Site Evaluation ({lat}, {lon}) ===")
+    print(
+        f"Timings -> Terrain: {terrain_ms:.1f} ms | Horizon: {horizon_ms:.1f} ms | "
+        f"Scores: {score_ms:.1f} ms | Render: {render_ms:.1f} ms"
     )
 
-    print("=" * 64)
-    print(f"POINT SCORE REPORT | {source_label}")
-    print(f"Coordinates : Lat = {lat} deg, Lon = {lon} deg, Elev = {site_row[8]:.1f} m")
-    print(f"Terrain     : Max Slope = {site_row[9]:.2f} deg, Mean Slope = {site_row[10]:.2f} deg, Roughness = {site_row[11]:.2f} m")
-    print(f"Time Window : {time_range[0]} -> {time_range[1]} (step: {time_resolution[0]} {time_resolution[1]})")
-    print("-" * 64)
-    print(f"  Safety Score (s_safety)   : {s_safety:.4f}")
-    print(f"  Science Score (s_science) : {s_science:.4f}")
-    print(f"  Sun Visibility (s_sun)    : {s_sun:.4f}  ({s_sun * 100:.2f}%)")
-    print(f"  Earth Visibility (s_earth): {s_earth:.4f}  ({s_earth * 100:.2f}%)")
-    print("=" * 64)
+    print("\n[1] Site Terrain Metadata:")
+    for col, val in zip(CSV_COLUMNS, site_row):
+        print(f"  {col:<15}: {val}")
 
-    return (s_safety, s_science, s_sun, s_earth)
+    print("\n[2] Mission Scores [0.0 - 1.0]:")
+    print(f"  s_safety        : {s_safety:.4f}")
+    print(f"  s_science       : {s_science:.4f}")
+    print(f"  s_sun           : {s_sun:.4f}")
+    print(f"  s_earth         : {s_earth:.4f}")
+
+    print("\n[3] Rover Traverse Summary:")
+    print(f"  Range Budget    : {r_max_km} km (return_to_lander={return_to_lander})")
+    print(f"  Raw Science Wt  : {render_res['raw_science_weight']}")
+    print(f"  Visited SSIs ({len(render_res['visited_ssi_ids'])}): {render_res['visited_ssi_ids']}")
+    if output_path:
+        print(f"  Saved PNG       : {output_path}")
+
+    # 5. Display image directly from RAM buffer
+    if show_image:
+        img = Image.open(io.BytesIO(render_res["image_bytes"]))
+        img.show(title=f"Rover Route ({lat}, {lon})")
+
+    return {
+        "site": dict(zip(CSV_COLUMNS, site_row)),
+        "scores": {
+            "s_safety": s_safety,
+            "s_science": s_science,
+            "s_sun": s_sun,
+            "s_earth": s_earth,
+        },
+        "visited_ssi_ids": render_res["visited_ssi_ids"],
+        "raw_science_weight": render_res["raw_science_weight"],
+    }
 
 
 if __name__ == "__main__":
-    # Edit coordinates and time range here and run the file directly
-    LAT = -89.54
-    LON = 129.78
-    TIME_RANGE = ("2027-01-01", "2027-01-30")
-    TIME_RESOLUTION = (1, "hour")
+    parser = argparse.ArgumentParser(description="Score a lunar site and display its 2D landing zone & route map.")
+    parser.add_argument("--lat", type=float, default=-89.6800, help="Latitude (-90 to 90)")
+    parser.add_argument("--lon", type=float, default=-130.0000, help="Longitude (-180 to 180)")
+    parser.add_argument("--range-km", type=float, default=12.0, help="Max rover travel distance (km)")
+    parser.add_argument("--return-to-lander", action="store_true", help="Require closed loop back to lander")
+    parser.add_argument("--out", type=str, default=None, help="Optional file path to also save the PNG")
+    parser.add_argument("--no-show", action="store_true", help="Skip opening the image viewer window")
+    args = parser.parse_args()
 
-    scores = test_point_scores(
-        lat=LAT,
-        lon=LON,
-        time_range=TIME_RANGE,
-        time_resolution=TIME_RESOLUTION,
+    test_score_and_show_image(
+        lat=args.lat,
+        lon=args.lon,
+        r_max_km=args.range_km,
+        return_to_lander=args.return_to_lander,
+        output_path=args.out,
+        show_image=not args.no_show,
     )

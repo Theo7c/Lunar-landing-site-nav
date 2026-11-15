@@ -274,7 +274,7 @@ def calculate_ssi_score(
     ssis_df: pd.DataFrame | None = None,
     r_max_km: float = 12.0,
     decay_rate: float = 0.15,
-    science_half_sat: float = 5.0,
+    science_half_sat: float = 2.5,
     return_to_lander: bool = False,
 ) -> float:
     """
@@ -316,7 +316,7 @@ def score_calculator(
     slope_weight: float = 0.60,
     r_max_km: float = 12.0,
     decay_rate: float = 0.15,
-    science_half_sat: float = 5.0,
+    science_half_sat: float = 2.5,
     return_to_lander: bool = False,
     ssis_df: pd.DataFrame | None = None,
     time_range: tuple[str, str] = ("2027-01-01", "2027-01-30"),
