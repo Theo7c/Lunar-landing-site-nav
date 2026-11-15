@@ -49,7 +49,7 @@
         width: 24px;
         height: 25px;
         border: 0;
-        background: url('clock.svg');
+        background: url('/clock.svg');
         cursor: pointer;
     }
 
@@ -57,7 +57,7 @@
         width: 24px;
         height: 25px;
         border: 0;
-        background: url('clock.svg');
+        background: url('/clock.svg');
         cursor: pointer;
     }
 </style>
