@@ -219,5 +219,9 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Ignore large raw NASA planetary datasets
-raw_data/
+raw_data/ldem_64.tif
+raw_data/ldem_16.tif
+raw_data/south_pole/LPSR_80S_20MPP_ADJ_1km2.csv
+raw_data/south_pole/LDEM_80S_80MPP_ADJ.tiff
+raw_data/LPSR_80S_20MPP_ADJ_1km2.csv
 processed_data/landing_site_horizons_cache.npz
