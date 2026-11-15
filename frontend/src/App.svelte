@@ -1,17 +1,22 @@
 <script>
-  import SiteCard from "./lib/SiteCard.svelte";
-  import SiteSelector from "./lib/SiteSelector.svelte";
-  import {sites} from "./shared/sites.svelte.js";
-  import {inputs} from "./shared/inputs.svelte.js"
-  import TimeSlider from "./lib/TimeSlider.svelte";
-  import Moon from "./lib/Moon.svelte";
-  import ParameterSelector from "./lib/ParameterSelector.svelte";
-    import { config } from "./shared/config.svelte";
+    import { onMount } from "svelte";
+    import SiteCard from "./lib/SiteCard.svelte";
+    import SiteSelector from "./lib/SiteSelector.svelte";
+    import {sites} from "./shared/sites.svelte.js";
+    import {inputs} from "./shared/inputs.svelte.js"
+    import TimeSlider from "./lib/TimeSlider.svelte";
+    import Moon from "./lib/Moon.svelte";
+    import ParameterSelector from "./lib/ParameterSelector.svelte";
+    import { API_URL } from "./shared/config.svelte";
 
-  const w = (v) => Number(v) || 0;   // treat null/NaN weights as 0
+    onMount(() => {
+      fetch(`${API_URL}`, { mode: "no-cors" }).catch(() => {});
+    });
 
-  const rankedSites = $derived(
-      sites
+    const w = (v) => Number(v) || 0;   // treat null/NaN weights as 0
+
+    const rankedSites = $derived(
+        sites
           .map((site, index) => ({
               site,
               index,   // position in the original array
@@ -23,7 +28,7 @@
                   (w(inputs.science) + w(inputs.safety) + w(inputs.sun) + w(inputs.earth)),
           }))
           .sort((a, b) => b.score - a.score)   // highest first
-  );
+    );
 
 
 </script>
