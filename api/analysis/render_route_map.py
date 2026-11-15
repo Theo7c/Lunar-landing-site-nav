@@ -47,12 +47,14 @@ except ImportError:
 try:
     from api.analysis.scores_calculator import (
         SSIS_CSV,
+        DEFAULT_MAX_STOPS,
         solve_best_rover_route_with_path,
         _resolve_csv_path,
     )
 except ImportError:
     from scores_calculator import (
         SSIS_CSV,
+        DEFAULT_MAX_STOPS,
         solve_best_rover_route_with_path,
         _resolve_csv_path,
     )
@@ -73,7 +75,6 @@ def _latlon_to_window_pixels(
     r0: int,
     c0: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Convert arrays of (lat, lon) to fractional (col, row) coordinates inside the DEM window."""
     if is_projected:
         xs, ys = transform("+proj=longlat +R=1737400 +no_defs", src.crs, lons.tolist(), lats.tolist())
         rows, cols = rasterio.transform.rowcol(src.transform, xs, ys)
@@ -90,7 +91,6 @@ def _latlon_to_window_pixels(
 
 
 def _draw_scale_bar(ax: plt.Axes, w_px: int, h_px: int, dx_m: float) -> None:
-    """Draw a compact, high-contrast metric scale bar in the bottom-left corner."""
     if w_px <= 10 or h_px <= 10 or dx_m <= 0.0:
         return
 
@@ -99,7 +99,6 @@ def _draw_scale_bar(ax: plt.Axes, w_px: int, h_px: int, dx_m: float) -> None:
     scale_m = float(_NICE_SCALE_STEPS_M[idx])
     bar_px = scale_m / dx_m
 
-    # Keep scale bar within 10%..40% of image width
     if bar_px > w_px * 0.40 and idx > 0:
         scale_m = float(_NICE_SCALE_STEPS_M[idx - 1])
         bar_px = scale_m / dx_m
@@ -142,6 +141,7 @@ def render_rover_route_image(
     r_max_km: float = 12.0,
     decay_rate: float = 0.15,
     return_to_lander: bool = False,
+    max_stops: int = DEFAULT_MAX_STOPS,
     show_scale_bar: bool = True,
     output_path: str | None = None,
     ssis_csv: str = SSIS_CSV,
@@ -151,15 +151,10 @@ def render_rover_route_image(
     """
     Generate a borderless `size_px x size_px` (default 150x150) 2D surface image showing
     the lunar topography around the inputted point, the true-to-scale shaded landing
-    dispersion zone, the highest-weight rover route within `r_max_km`, and a compact
-    metric scale bar.
-
-    Renders into an in-memory `io.BytesIO` buffer (`image_bytes`). Only writes to disk
-    if `output_path` is explicitly provided.
+    dispersion zone, and the highest-weight rover route (capped at `max_stops`, default 20).
     """
     t_start = time.perf_counter()
 
-    # Section 1: Site coordinate / terrain resolution
     t_sec = time.perf_counter()
     if site_row is not None and len(site_row) >= 8:
         lat_val = float(site_row[2])
@@ -178,7 +173,6 @@ def render_rover_route_image(
         raise ValueError("Provide either `(lat, lon)` or a valid 12-element `site_row`.")
     site_lookup_ms = (time.perf_counter() - t_sec) * 1000.0
 
-    # Section 2: Load SSIs and find optimal multi-stop route within r_max_km
     t_sec = time.perf_counter()
     resolved_ssis = _resolve_csv_path(ssis_csv)
     ssis_df = pd.read_csv(resolved_ssis) if os.path.exists(resolved_ssis) else pd.DataFrame()
@@ -200,11 +194,11 @@ def render_rover_route_image(
                 r_max_km=float(r_max_km),
                 decay_rate=float(decay_rate),
                 return_to_lander=return_to_lander,
+                max_stops=max_stops,
             )
             cand_df = ssis_df.iloc[nbr_arr].reset_index(drop=True)
     route_solve_ms = (time.perf_counter() - t_sec) * 1000.0
 
-    # Section 3: Extract 2D DEM window covering 1.35x the rover range
     t_sec = time.perf_counter()
     is_south_pole = lat_val <= -80.0
     src, _ = get_dataset(SP_SOURCES if is_south_pole else GLOBAL_SOURCES)
@@ -245,7 +239,6 @@ def render_rover_route_image(
         dem_patch = np.where(np.isnan(dem_patch), float(np.nanmedian(dem_patch)), dem_patch)
     dem_read_ms = (time.perf_counter() - t_sec) * 1000.0
 
-    # Section 4: Hillshade + Matplotlib plotting + exact size_px x size_px PNG encoding
     t_sec = time.perf_counter()
     dx_m = res_m if is_projected else max(50.0, res_m * np.cos(np.radians(lat_val)))
     ls = LightSource(azdeg=315, altdeg=35)
@@ -269,7 +262,6 @@ def render_rover_route_image(
         np.array([lat_val]), np.array([lon_val]), src, is_projected, r0, c0
     )
 
-    # True-to-scale shaded landing zone dispersion ellipse
     lz_rx = max(0.5, resolved_radius_m / dx_m)
     lz_ry = max(0.5, resolved_radius_m / res_m)
     landing_zone_patch = Ellipse(
@@ -284,7 +276,6 @@ def render_rover_route_image(
     )
     ax.add_patch(landing_zone_patch)
 
-    # Candidate SSIs in range
     if not cand_df.empty:
         cand_x, cand_y = _latlon_to_window_pixels(
             cand_df["lat"].to_numpy(dtype=np.float64),
@@ -329,7 +320,6 @@ def render_rover_route_image(
                 zorder=6,
             )
 
-    # Compact lander center marker
     ax.scatter(
         lander_x,
         lander_y,
@@ -348,7 +338,6 @@ def render_rover_route_image(
     ax.set_ylim(h_px - 1, 0)
     ax.set_axis_off()
 
-    # Save exact size_px x size_px canvas without bbox trimming
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=dpi)
     plt.close(fig)
@@ -370,7 +359,7 @@ def render_rover_route_image(
     }
     print(
         f"[render_route_map] ({lat_val}, {lon_val}, {size_px}x{size_px}px, "
-        f"r={r_max_km}km, lz={resolved_radius_m:.0f}m) -> {timings_ms}"
+        f"r={r_max_km}km, stops={len(visited_order)}/{max_stops}) -> {timings_ms}"
     )
 
     return {
@@ -397,6 +386,7 @@ if __name__ == "__main__":
     parser.add_argument("--lon", type=float, default=-130.0000, help="Longitude (-180 to 180)")
     parser.add_argument("--area-radius-m", type=float, default=None, help="Landing zone dispersion radius (m)")
     parser.add_argument("--range-km", type=float, default=12.0, help="Max rover travel distance (km)")
+    parser.add_argument("--max-stops", type=int, default=DEFAULT_MAX_STOPS, help="Max science stops per mission")
     parser.add_argument("--size-px", type=int, default=150, help="Output image width and height in pixels")
     parser.add_argument("--return-to-lander", action="store_true", help="Require closed loop back to lander")
     parser.add_argument("--no-scale-bar", action="store_true", help="Hide the scale bar")
@@ -408,6 +398,7 @@ if __name__ == "__main__":
         lon=args.lon,
         area_radius_m=args.area_radius_m,
         r_max_km=args.range_km,
+        max_stops=args.max_stops,
         size_px=args.size_px,
         return_to_lander=args.return_to_lander,
         show_scale_bar=not args.no_scale_bar,
