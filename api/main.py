@@ -23,7 +23,7 @@ from analysis.score_calculator import (
     calculate_ssi_score,
     calculate_astronomical_scores,
 )
-from analysis.scores_calculator import scores_calculator
+from analysis.scores_calculator import scores_calculator, DEFAULT_MAX_STOPS
 from analysis.render_route_map import render_rover_route_image
 
 app = FastAPI()
@@ -84,12 +84,14 @@ def _build_full_site_payload(
     decay_rate: float = 0.15,
     science_half_sat: float = 5.0,
     return_to_lander: bool = False,
-    precomputed_scores: dict | None = None,
+    max_stops: int = DEFAULT_MAX_STOPS,
+    precomputed_safety_science: dict | None = None,
 ) -> tuple[dict, dict]:
     """
     Builds the complete single-site response dictionary (site metadata, 360-deg horizon
-    profile, Sun/Earth ephemeris + horizon elevation series, and all 4 scores).
-    Reuses `precomputed_scores` when called from batch ranking to avoid duplicate work.
+    profile, Sun/Earth ephemeris + horizon elevation series, and exact scores).
+    Reuses `precomputed_safety_science` when called from batch ranking while always
+    computing exact `s_sun` and `s_earth` from the fetched ephemeris and horizon profile.
     """
     lat = float(site_row[2])
     lng = float(site_row[3])
@@ -124,12 +126,17 @@ def _build_full_site_payload(
     df = df.drop(columns=["azimuth", "altitude"])
     interp_ms = (time.perf_counter() - t_sec) * 1000.0
 
-    # Scores (reuse batch-computed scores if provided)
-    if precomputed_scores is not None:
-        scores = dict(precomputed_scores)
+    # Exact Sun & Earth visibility fractions from the interpolated ephemeris + horizon profile
+    t_sec = time.perf_counter()
+    s_sun = round(float(np.mean(df["sunEl"].to_numpy(dtype=float) > df["sunHorizonEl"].to_numpy(dtype=float))), 4)
+    s_earth = round(float(np.mean(df["earthEl"].to_numpy(dtype=float) > df["earthHorizonEl"].to_numpy(dtype=float))), 4)
+    astro_score_ms = (time.perf_counter() - t_sec) * 1000.0
+
+    if precomputed_safety_science is not None:
+        s_safety = float(precomputed_safety_science["s_safety"])
+        s_science = float(precomputed_safety_science["s_science"])
         safety_ms = 0.0
         science_ms = 0.0
-        astro_score_ms = 0.0
     else:
         t_sec = time.perf_counter()
         s_safety = calculate_safety_score(
@@ -148,24 +155,16 @@ def _build_full_site_payload(
             decay_rate=decay_rate,
             science_half_sat=science_half_sat,
             return_to_lander=return_to_lander,
+            max_stops=max_stops,
         )
         science_ms = (time.perf_counter() - t_sec) * 1000.0
 
-        t_sec = time.perf_counter()
-        s_sun, s_earth = calculate_astronomical_scores(
-            site_row=site_row,
-            time_range=(t0, t1),
-            time_resolution=(1, resolution),
-            horizon_profile=horizons,
-        )
-        astro_score_ms = (time.perf_counter() - t_sec) * 1000.0
-
-        scores = {
-            "s_safety": s_safety,
-            "s_science": s_science,
-            "s_sun": s_sun,
-            "s_earth": s_earth,
-        }
+    scores = {
+        "s_safety": s_safety,
+        "s_science": s_science,
+        "s_sun": s_sun,
+        "s_earth": s_earth,
+    }
 
     payload = {
         "lat": lat,
@@ -207,6 +206,7 @@ async def root(
     decay_rate: float = 0.15,
     science_half_sat: float = 5.0,
     return_to_lander: bool = False,
+    max_stops: int = DEFAULT_MAX_STOPS,
 ):
     t_start = time.perf_counter()
     t0, t1, resolution = _format_time_window(time_start, time_end)
@@ -230,6 +230,7 @@ async def root(
         decay_rate=decay_rate,
         science_half_sat=science_half_sat,
         return_to_lander=return_to_lander,
+        max_stops=max_stops,
     )
     total_ms = (time.perf_counter() - t_start) * 1000.0
 
@@ -238,7 +239,7 @@ async def root(
         **step_timings,
         "total_ms": round(total_ms, 2),
     }
-    print(f"[GET /] ({lat}, {lng}, lz={site_row[7]}m) -> {timings_ms}")
+    print(f"[GET /] ({lat}, {lng}, lz={site_row[7]}m, max_stops={max_stops}) -> {timings_ms}")
 
     return {
         **payload,
@@ -262,6 +263,7 @@ async def inspect_site_fast(
     decay_rate: float = 0.15,
     science_half_sat: float = 5.0,
     return_to_lander: bool = False,
+    max_stops: int = DEFAULT_MAX_STOPS,
 ):
     t_start = time.perf_counter()
 
@@ -288,6 +290,7 @@ async def inspect_site_fast(
         decay_rate=decay_rate,
         science_half_sat=science_half_sat,
         return_to_lander=return_to_lander,
+        max_stops=max_stops,
     )
     science_ms = (time.perf_counter() - t_sec) * 1000.0
     total_ms = (time.perf_counter() - t_start) * 1000.0
@@ -298,7 +301,7 @@ async def inspect_site_fast(
         "science_route_ms": round(science_ms, 2),
         "total_ms": round(total_ms, 2),
     }
-    print(f"[GET /api/site/inspect] ({lat}, {lng}, lz={site_row[7]}m) -> {timings_ms}")
+    print(f"[GET /api/site/inspect] ({lat}, {lng}, lz={site_row[7]}m, max_stops={max_stops}) -> {timings_ms}")
 
     return {
         "lat": lat,
@@ -324,6 +327,7 @@ async def get_route_map(
     r_max_km: float = 12.0,
     decay_rate: float = 0.15,
     return_to_lander: bool = False,
+    max_stops: int = DEFAULT_MAX_STOPS,
     size_px: int = 150,
     dpi: int = 100,
 ):
@@ -341,6 +345,7 @@ async def get_route_map(
         r_max_km=r_max_km,
         decay_rate=decay_rate,
         return_to_lander=return_to_lander,
+        max_stops=max_stops,
         output_path=None,
         size_px=size_px,
         dpi=dpi,
@@ -366,7 +371,7 @@ async def get_route_map(
 
 
 # ==============================================================================
-# 4. BATCH WEIGHTED MCDM SCORING & FULL TOP-5 SITE PAYLOADS ENDPOINT
+# 4. BATCH WEIGHTED MCDM SCORING (TOP-20 EXACT REFINEMENT -> TOP-5 RETURNED)
 # ==============================================================================
 @app.get("/api/sites/scores")
 async def all_sites_scores(
@@ -374,6 +379,7 @@ async def all_sites_scores(
     w_science: float = 0.25,
     w_sun: float = 0.25,
     w_earth: float = 0.25,
+    candidate_pool: int = 20,
     top_n: int = 5,
     time_start: str = "2027-01-01T00:00:00",
     time_end: str = "2027-01-30T00:00:00",
@@ -385,13 +391,15 @@ async def all_sites_scores(
     decay_rate: float = 0.15,
     science_half_sat: float = 5.0,
     return_to_lander: bool = False,
+    max_stops: int = DEFAULT_MAX_STOPS,
     filter_infeasible: bool = True,
 ):
     """
-    Batch-evaluates all candidate sites, ranks them by weighted MCDM score, and
-    returns the complete root-style payload (ephemeris graph data, horizon profile,
-    site metadata, and all scores) for each of the top `top_n` (default 5) sites
-    so the frontend only needs to request `/api/site/route-map` for their images.
+    1. Batch-scores all candidate sites using fast astronomical approximations.
+    2. Selects the top `candidate_pool` (default 20) sites and evaluates their exact
+       360-deg horizon profiles + JPL Horizons Sun/Earth ephemerides in parallel.
+    3. Re-ranks those 20 candidates using exact `s_sun` and `s_earth`, and returns
+       only the final top `top_n` (default 5) full root-level payloads.
     """
     if any(w < 0.0 for w in (w_safety, w_science, w_sun, w_earth)):
         raise HTTPException(status_code=400, detail="Weights must be non-negative.")
@@ -418,6 +426,7 @@ async def all_sites_scores(
         decay_rate=decay_rate,
         science_half_sat=science_half_sat,
         return_to_lander=return_to_lander,
+        max_stops=max_stops,
         time_range=(t0, t1),
         time_resolution=(1, resolution),
         filter_infeasible=filter_infeasible,
@@ -428,6 +437,7 @@ async def all_sites_scores(
         total_ms = (time.perf_counter() - t_start) * 1000.0
         return {
             "evaluated_count": 0,
+            "refined_candidate_count": 0,
             "resolution": resolution,
             "normalized_weights": {
                 "w_safety": round(nw_safety, 4),
@@ -437,50 +447,61 @@ async def all_sites_scores(
             },
             "timings_ms": {
                 "batch_score_ms": round(batch_score_ms, 2),
-                "top_sites_ephemeris_ms": 0.0,
+                "top_candidates_ephemeris_ms": 0.0,
                 "total_ms": round(total_ms, 2),
             },
             "top_sites": [],
         }
 
-    df["total_score"] = np.round(
+    # Initial proxy ranking across the full catalog
+    df["proxy_total_score"] = (
         nw_safety * df["s_safety"]
         + nw_science * df["s_science"]
         + nw_sun * df["s_sun"]
-        + nw_earth * df["s_earth"],
-        4,
+        + nw_earth * df["s_earth"]
     )
 
-    ranked_df = (
+    pool_k = max(1, max(int(candidate_pool), int(top_n)))
+    shortlist_df = (
         df.sort_values(
-            by=["total_score", "s_safety", "s_science"],
+            by=["proxy_total_score", "s_safety", "s_science"],
             ascending=[False, False, False],
         )
-        .head(max(1, top_n))
+        .head(pool_k)
         .reset_index(drop=True)
     )
 
-    # Fetch full root-level payloads (ephemeris + horizon + metadata) for the top N sites in parallel
+    # Evaluate exact horizon + JPL Horizons ephemeris for the top 20 candidates in parallel
     t_eph = time.perf_counter()
 
-    def _hydrate_ranked_site(rank_idx: int, row_dict: dict) -> dict:
+    def _evaluate_exact_candidate(row_dict: dict) -> dict:
         site_row = [row_dict[col] for col in CSV_COLUMNS]
-        precomputed_scores = {
-            "s_safety": float(row_dict["s_safety"]),
-            "s_science": float(row_dict["s_science"]),
-            "s_sun": float(row_dict["s_sun"]),
-            "s_earth": float(row_dict["s_earth"]),
-            "total_score": float(row_dict["total_score"]),
-        }
+        s_safety = float(row_dict["s_safety"])
+        s_science = float(row_dict["s_science"])
+
         full_payload, _ = _build_full_site_payload(
             site_row=site_row,
             t0=t0,
             t1=t1,
             resolution=resolution,
-            precomputed_scores=precomputed_scores,
+            max_stops=max_stops,
+            precomputed_safety_science={
+                "s_safety": s_safety,
+                "s_science": s_science,
+            },
         )
+        s_sun_exact = float(full_payload["scores"]["s_sun"])
+        s_earth_exact = float(full_payload["scores"]["s_earth"])
+        exact_total = round(
+            nw_safety * s_safety
+            + nw_science * s_science
+            + nw_sun * s_sun_exact
+            + nw_earth * s_earth_exact,
+            4,
+        )
+        full_payload["scores"]["total_score"] = exact_total
+
         return {
-            "rank": rank_idx + 1,
             **full_payload,
             "rover": {
                 "reachable_ssi_count": int(row_dict["reachable_ssi_count"]),
@@ -489,22 +510,39 @@ async def all_sites_scores(
         }
 
     tasks = [
-        asyncio.to_thread(_hydrate_ranked_site, idx, row.to_dict())
-        for idx, row in ranked_df.iterrows()
+        asyncio.to_thread(_evaluate_exact_candidate, row.to_dict())
+        for _, row in shortlist_df.iterrows()
     ]
-    top_sites = await asyncio.gather(*tasks)
-    top_sites_ephemeris_ms = (time.perf_counter() - t_eph) * 1000.0
+    refined_candidates = list(await asyncio.gather(*tasks))
+    top_candidates_ephemeris_ms = (time.perf_counter() - t_eph) * 1000.0
+
+    # Re-sort the 20 refined candidates by exact total_score and keep only the top 5
+    refined_candidates.sort(
+        key=lambda item: (
+            item["scores"]["total_score"],
+            item["scores"]["s_safety"],
+            item["scores"]["s_science"],
+        ),
+        reverse=True,
+    )
+    final_top = refined_candidates[: max(1, int(top_n))]
+    for idx, site_payload in enumerate(final_top):
+        site_payload["rank"] = idx + 1
 
     total_ms = (time.perf_counter() - t_start) * 1000.0
     timings_ms = {
         "batch_score_ms": round(batch_score_ms, 2),
-        "top_sites_ephemeris_ms": round(top_sites_ephemeris_ms, 2),
+        "top_candidates_ephemeris_ms": round(top_candidates_ephemeris_ms, 2),
         "total_ms": round(total_ms, 2),
     }
-    print(f"[GET /api/sites/scores] Evaluated {len(df)} sites -> top {len(top_sites)} full payloads in {timings_ms}")
+    print(
+        f"[GET /api/sites/scores] Evaluated {len(df)} sites -> refined top {len(refined_candidates)} "
+        f"-> returned top {len(final_top)} in {timings_ms}"
+    )
 
     return {
         "evaluated_count": len(df),
+        "refined_candidate_count": len(refined_candidates),
         "resolution": resolution,
         "normalized_weights": {
             "w_safety": round(nw_safety, 4),
@@ -513,5 +551,5 @@ async def all_sites_scores(
             "w_earth": round(nw_earth, 4),
         },
         "timings_ms": timings_ms,
-        "top_sites": list(top_sites),
+        "top_sites": final_top,
     }
