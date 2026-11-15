@@ -6,7 +6,6 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from dotenv import load_dotenv
 
 from api.analysis.GeminiAPICaller import GeneratePrefix, GenerateDefaultQuery, GetAIResponse, FormatResponse
 
@@ -29,7 +28,6 @@ from api.analysis.render_route_map import render_rover_route_image
 
 app = FastAPI()
 
-load_dotenv("./api/.env")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 origins = [
