@@ -7,7 +7,7 @@
 ## Official Project Links & Tutorial
 
 * **Live Web Application:** [https://lunar.isaacbarker.net](https://lunar.isaacbarker.net)
-* **Presentation & Visual Tutorial:** [Lunar Landing Navigator Presentation](https://docs.google.com/presentation/d/1L2ga50d0BYGZ_xTR7sy67_gp1S9Lelfc/edit?usp=drive_link&ouid=114225838610489975589&rtpof=true&sd=true) — *Provides a complete visual walkthrough and user tutorial covering mission epoch selection, AI-assisted weight generation, interactive 3D globe navigation, on-demand coordinate inspection, and site comparison telemetry cards.*
+* **Presentation & Visual Tutorial:** [Lunar Landing Navigator Presentation](https://docs.google.com/presentation/d/1L2ga50d0BYGZ_xTR7sy67_gp1S9Lelfc/edit?usp=sharing&ouid=114225838610489975589&rtpof=true&sd=true) — *Provides a complete visual walkthrough and user tutorial covering mission epoch selection, AI-assisted weight generation, interactive 3D globe navigation, on-demand coordinate inspection, and site comparison telemetry cards.*
 * **GitHub Repository:** [https://github.com/Theo7c/Lunar-landing-site-nav](https://github.com/Theo7c/Lunar-landing-site-nav)
 
 ---
@@ -33,7 +33,6 @@
    - [6.2 Interactive 3D Web Client (`frontend/`)](#62-interactive-3d-web-client-frontend)
 7. [Data Schemas (`processed_data/`)](#7-data-schemas-processed_data)
 8. [REST API Specification](#8-rest-api-specification)
-9. [Installation, Environment Variables & Local Setup](#9-installation-environment-variables--local-setup)
 
 ---
 
@@ -145,11 +144,11 @@ $$Y = R_{\text{moon}} \cos(\phi)\sin(\lambda)$$
 $$Z = R_{\text{moon}} \sin(\phi)$$
 
 #### Exact Conversion Between Geodesic Arc Length and 3D Chord Distance
-Let $d_{\text{surface}}$ be the true great-circle surface traverse distance (in kilometers) between two points $\mathbf{p}_1, \mathbf{p}_2$ on the lunar sphere. The central angle $\Delta\sigma$ (in radians) subtended at the Moon's center is:
+Let $d_{\text{surface}}$ be the true great-circle surface traverse distance (in kilometers) between two points $\mathbf{p_1}, \mathbf{p_2}$ on the lunar sphere. The central angle $\Delta\sigma$ (in radians) subtended at the Moon's center is:
 
 $$\Delta\sigma = \frac{d_{\text{surface}}}{R_{\text{moon}}}$$
 
-By constructing an isosceles triangle with two sides of length $R_{\text{moon}}$ and included angle $\Delta\sigma$, the exact 3D Euclidean straight-line chord length $d_{\text{chord}} = \Vert{}\mathbf{p}_1 - \mathbf{p}_2\Vert{}_2$ through the lunar interior is:
+By constructing an isosceles triangle with two sides of length $R_{\text{moon}}$ and included angle $\Delta\sigma$, the exact 3D Euclidean straight-line chord length $d_{\text{chord}} = \lVert \mathbf{p_1} - \mathbf{p_2} \rVert_2$ through the lunar interior is:
 
 $$d_{\text{chord}} = 2 R_{\text{moon}} \sin\left(\frac{d_{\text{surface}}}{2 R_{\text{moon}}}\right)$$
 
@@ -175,30 +174,30 @@ $$\text{col} = \left\lfloor \frac{x_{\text{proj}} - x_0}{\Delta x} \right\rfloor
 When inspecting an arbitrary coordinate $(\phi_0, \lambda_0)$, `inspect_point.py` uses GDAL's `/vsicurl/` virtual filesystem driver (`gdal.Open('/vsicurl/https://...')`) and `band.ReadAsArray(xoff, yoff, xsize, ysize)` to issue HTTP `Range` requests. This streams only the small $N \times N$ pixel subarray surrounding $(\text{col}, \text{row})$ directly into RAM over HTTPS.
 
 To capture terrain hazards across both spacecraft touchdown and guidance scales, two concentric windows are evaluated:
-1. **Local Window ($\Omega_{\text{local}}$):** Represents the immediate lander footprint and rocket plume interaction zone (e.g., $\sim 60\text{--}100\text{ m}$ radius).
-2. **Regional Window ($\Omega_{\text{regional}}$):** Represents the 3-sigma guidance navigation & control (GN&C) landing dispersion ellipse and initial rover egress zone (e.g., $\sim 500\text{--}1,000\text{ m}$ radius).
+1. **Local Window ($\Omega_{\text{local}}$):** Represents the immediate lander footprint and rocket plume interaction zone (e.g., $60\text{--}100\text{ m}$ radius).
+2. **Regional Window ($\Omega_{\text{regional}}$):** Represents the 3-sigma guidance navigation & control (GN&C) landing dispersion ellipse and initial rover egress zone (e.g., $500\text{--}1,000\text{ m}$ radius).
 
 #### 2D Finite-Difference Surface Slope Calculation
-Let $z(i, j)$ be the elevation in meters at row $i$, column $j$ of a DEM window with uniform spatial resolution $\Delta s = |\Delta x| = |\Delta y|$ (in meters/pixel). `inspect_point.py` computes the orthogonal spatial partial derivatives using a second-order central finite-difference stencil (`numpy.gradient`) at interior nodes (and first-order forward/backward differences at window boundaries):
+Let $z(i, j)$ be the elevation in meters at row $i$, column $j$ of a DEM window with uniform spatial resolution $\Delta s = \vert{}\Delta x\vert{} = \vert{}\Delta y\vert{}$ (in meters/pixel). `inspect_point.py` computes the orthogonal spatial partial derivatives using a second-order central finite-difference stencil (`numpy.gradient`) at interior nodes (and first-order forward/backward differences at window boundaries):
 
 $$\frac{\partial z}{\partial x}(i, j) \approx \frac{z(i, j+1) - z(i, j-1)}{2\Delta s}, \qquad \frac{\partial z}{\partial y}(i, j) \approx \frac{z(i+1, j) - z(i-1, j)}{2\Delta s}$$
 
-The magnitude of the surface gradient vector $\nabla z(i, j) = \left[\frac{\partial z}{\partial x}, \frac{\partial z}{\partial y}\right]^T$ represents the tangent of the local tilt angle:
+The magnitude of the surface gradient vector $\nabla z(i, j)$ represents the tangent of the local tilt angle:
 
-$$\|\nabla z(i, j)\|_2 = \sqrt{\left(\frac{\partial z}{\partial x}(i, j)\right)^2 + \left(\frac{\partial z}{\partial y}(i, j)\right)^2}$$
+$$\lVert \nabla z(i, j) \rVert_2 = \sqrt{\left(\frac{\partial z}{\partial x}(i, j)\right)^2 + \left(\frac{\partial z}{\partial y}(i, j)\right)^2}$$
 
 The local topographic slope angle $\theta(i, j)$ in degrees is therefore:
 
 $$\theta(i, j) = \arctan\left(\sqrt{\left(\frac{\partial z}{\partial x}(i, j)\right)^2 + \left(\frac{\partial z}{\partial y}(i, j)\right)^2}\right) \times \frac{180^\circ}{\pi}$$
 
-From the 2D slope matrix over window $\Omega \in \{\Omega_{\text{local}}, \Omega_{\text{regional}}\}$, the code extracts the **mean slope** $\bar{\theta}_{\Omega}$ and the **maximum (worst-case) slope** $\theta_{\max, \Omega}$:
+From the 2D slope matrix over window $\Omega$, the code extracts the **mean slope** $\bar{\theta_{\Omega}}$ and the **maximum (worst-case) slope** $\theta_{\max, \Omega}$:
 
-$$\bar{\theta}_{\Omega} = \frac{1}{|\Omega|} \sum_{(i,j)\in\Omega} \theta(i, j), \qquad \theta_{\max, \Omega} = \max_{(i,j)\in\Omega} \theta(i, j)$$
+$$\bar{\theta_{\Omega}} = \frac{1}{\vert{}\Omega\vert{}} \sum_{(i,j)\in\Omega} \theta(i, j), \qquad \theta_{\max, \Omega} = \max_{(i,j)\in\Omega} \theta(i, j)$$
 
 #### Terrain Roughness (RMS Elevation Dispersion)
-Terrain roughness $\sigma_{\Omega}$ (in meters) quantifies vertical surface irregularity (boulders, small impact craters, hummocky ejecta) within window $\Omega$ as the root-mean-square (RMS) standard deviation of elevation residuals relative to the window's mean elevation $\bar{z}_{\Omega}$:
+Terrain roughness $\sigma_{\Omega}$ (in meters) quantifies vertical surface irregularity (boulders, small impact craters, hummocky ejecta) within window $\Omega$ as the root-mean-square (RMS) standard deviation of elevation residuals relative to the window's mean elevation $\bar{z_{\Omega}}$:
 
-$$\bar{z}_{\Omega} = \frac{1}{|\Omega|} \sum_{(i,j)\in\Omega} z(i, j), \qquad \sigma_{\Omega} = \sqrt{\frac{1}{|\Omega|} \sum_{(i,j)\in\Omega} \big(z(i, j) - \bar{z}_{\Omega}\big)^2}$$
+$$\bar{z_{\Omega}} = \frac{1}{\vert{}\Omega\vert{}} \sum_{(i,j)\in\Omega} z(i, j), \qquad \sigma_{\Omega} = \sqrt{\frac{1}{\vert{}\Omega\vert{}} \sum_{(i,j)\in\Omega} \big(z(i, j) - \bar{z_{\Omega}}\big)^2}$$
 
 ---
 
@@ -209,16 +208,16 @@ Implemented in `score_calculator.py` and vectorized across all sites in `scores_
 1. **Worst-Case Hazard Envelope:**
    To prevent a smooth regional average from masking a lethal local crater wall (or vice versa), the algorithm takes the conservative worst-case slope $\theta_{\text{worst}}$ and worst-case roughness $\sigma_{\text{worst}}$ across the site's telemetry vector:
 
-$$\theta_{\text{worst}} = \max\left(\bar{\theta}_{\text{local}},\, \bar{\theta}_{\text{regional}},\, \theta_{\max, \text{local}}\right)$$
+$$\theta_{\text{worst}} = \max\left(\bar{\theta_{\text{local}}}, \bar{\theta_{\text{regional}}}, \theta_{\max, \text{local}}\right)$$
 
-$$\sigma_{\text{worst}} = \max\left(\sigma_{\text{local}},\, \sigma_{\text{regional}}\right)$$
+$$\sigma_{\text{worst}} = \max\left(\sigma_{\text{local}}, \sigma_{\text{regional}}\right)$$
 
 2. **Hardware-Constrained Linear Penalty Functions:**
    Let $S_{\max}$ be the lander's maximum allowable touchdown tilt angle (in degrees, e.g., $5^\circ\text{--}15^\circ$) and $\sigma_{\max}$ be the lander's maximum allowable vertical roughness/clearance limit (in meters). Normalized dimensionless safety factors $f_{\text{slope}}, f_{\text{rough}} \in [0, 1]$ are computed via clamped linear decay:
 
-$$f_{\text{slope}} = \operatorname{clip}\left(1 - \frac{\theta_{\text{worst}}}{S_{\max}},\; 0,\; 1\right) = \max\left(0,\; \min\left(1,\; 1 - \frac{\theta_{\text{worst}}}{S_{\max}}\right)\right)$$
+$$f_{\text{slope}} = \text{clip}\left(1 - \frac{\theta_{\text{worst}}}{S_{\max}}, 0, 1\right) = \max\left(0, \min\left(1, 1 - \frac{\theta_{\text{worst}}}{S_{\max}}\right)\right)$$
 
-$$f_{\text{rough}} = \operatorname{clip}\left(1 - \frac{\sigma_{\text{worst}}}{\sigma_{\max}},\; 0,\; 1\right) = \max\left(0,\; \min\left(1,\; 1 - \frac{\sigma_{\text{worst}}}{\sigma_{\max}}\right)\right)$$
+$$f_{\text{rough}} = \text{clip}\left(1 - \frac{\sigma_{\text{worst}}}{\sigma_{\max}}, 0, 1\right) = \max\left(0, \min\left(1, 1 - \frac{\sigma_{\text{worst}}}{\sigma_{\max}}\right)\right)$$
 
 3. **Composite Safety Aggregation:**
    The overall safety score $S_{\text{safety}} \in [0, 100]$ combines the slope and roughness survival factors:
@@ -231,7 +230,7 @@ $$S_{\text{safety}} = 100 \times \big(0.5 \, f_{\text{slope}} + 0.5 \, f_{\text{
 
 At lunar polar latitudes ($\vert{}\phi\vert{} > 80^\circ$), the Sun and Earth remain at grazing elevations near $0^\circ$. Furthermore, because the Moon's radius ($1,737.4\text{ km}$) is only $\sim 27\%$ of Earth's, planetary curvature causes rapid horizon drop-off ($\Delta h \approx \frac{d^2}{2 R_{\text{moon}}}$, or $\approx 720\text{ m}$ of vertical drop at $d = 50\text{ km}$). Flat-Earth tangent-plane ray-casting severely overestimates shadow lengths from distant massifs. `horizon.py` and `inspect_point.py` implement **exact spherical trigonometry ray-casting**.
 
-```
+```text
        Observer (r0 = R + z0 + h_mast)    Target Terrain Peak (r1 = R + z1)
                 *  _ - - - - - - - - - - - - *
                 | \   alpha (Elevation)     /
@@ -251,7 +250,7 @@ At lunar polar latitudes ($\vert{}\phi\vert{} > 80^\circ$), the Sun and Earth re
 $$r_0 = R_{\text{moon}} + z_0 + h_{\text{mast}}$$
 
 2. **Azimuthal Ray Marching:**
-   For each discrete azimuth angle $\psi \in \{0^\circ, 1^\circ, 2^\circ, \dots, 359^\circ\}$ (measured clockwise from local lunar North), a geodesic ray is marched outward in radial distance steps $d_m \in [d_{\min}, d_{\max}]$.
+   For each discrete azimuth angle $\psi \in \lbrace 0^\circ, 1^\circ, 2^\circ, \dots, 359^\circ \rbrace$ (measured clockwise from local lunar North), a geodesic ray is marched outward in radial distance steps $d_m \in [d_{\min}, d_{\max}]$.
    In local planar polar stereographic coordinates centered at $(x_0, y_0)$ with local grid meridian convergence offset, step $(d_m, \psi)$ samples DEM coordinates:
 
 $$x_m = x_0 + d_m \sin(\psi), \qquad y_m = y_0 + d_m \cos(\psi)$$
@@ -262,13 +261,17 @@ $$r_1(d_m, \psi) = R_{\text{moon}} + z_1(d_m, \psi)$$
 
 3. **Exact Spherical Elevation Angle ($\alpha$):**
    A surface arc distance $d_m$ subtends a central angle $\gamma_m = \frac{d_m}{R_{\text{moon}}}$ (in radians) at the center of the Moon. In the 2D plane spanned by the lunar center, the observer, and the target point:
-   - The component of $\mathbf{r}_1$ parallel to the observer's zenith vector $\hat{\mathbf{u}}_0$ is $r_1 \cos(\gamma_m)$, giving a vertical height difference relative to the observer's local horizontal plane of:
-     $$\Delta v = r_1 \cos(\gamma_m) - r_0$$
-   - The component of $\mathbf{r}_1$ perpendicular to $\hat{\mathbf{u}}_0$ (parallel to the observer's local horizontal tangent plane) is:
-     $$\Delta h = r_1 \sin(\gamma_m)$$
+   - The component of $\mathbf{r_1}$ parallel to the observer's zenith vector $\hat{\mathbf{u_0}}$ is $r_1 \cos(\gamma_m)$, giving a vertical height difference relative to the observer's local horizontal plane of:
+
+$$\Delta v = r_1 \cos(\gamma_m) - r_0$$
+
+   - The component of $\mathbf{r_1}$ perpendicular to $\hat{\mathbf{u_0}}$ (parallel to the observer's local horizontal tangent plane) is:
+
+$$\Delta h = r_1 \sin(\gamma_m)$$
+
    The exact apparent horizon elevation angle $\alpha(\psi, d_m)$ in degrees is therefore:
 
-$$\alpha(\psi, d_m) = \operatorname{atan2}\Big(r_1 \cos(\gamma_m) - r_0,\; r_1 \sin(\gamma_m)\Big) \times \frac{180^\circ}{\pi}$$
+$$\alpha(\psi, d_m) = \text{atan2}\Big(r_1 \cos(\gamma_m) - r_0, r_1 \sin(\gamma_m)\Big) \times \frac{180^\circ}{\pi}$$
 
 4. **Horizon Profile Envelope ($H(\psi)$):**
    Taking the maximum apparent elevation angle over all radial steps $d_m$ along azimuth $\psi$ yields the horizon mask $H(\psi)$:
@@ -293,14 +296,18 @@ $$H(\psi) = \max_{d_m \in [d_{\min}, d_{\max}]} \alpha(\psi, d_m)$$
 
 2. **Azimuthal Horizon Lookup & Line-of-Sight Occlusion:**
    For each discrete ephemeris timestep $t_k$ ($k = 1, \dots, K$), the celestial body's apparent azimuth $\psi_{\text{body}}(t_k) \in [0^\circ, 360^\circ)$ is matched against the site's 360° horizon profile $H(\psi)$ (via nearest-bin indexing $\lfloor \psi_{\text{body}}(t_k) \rfloor \bmod 360$ or linear interpolation between adjacent $1^\circ$ bins).
-   Using the Heaviside step function $\Theta(\cdot)$, the instantaneous Line-of-Sight visibility state $V_{\text{body}}(t_k) \in \{0, 1\}$ is:
+   Using the Heaviside step function $\Theta(\cdot)$, the instantaneous Line-of-Sight visibility state $V_{\text{body}}(t_k) \in \lbrace 0, 1 \rbrace$ is:
 
-$$V_{\text{body}}(t_k) = \Theta\Big(\theta_{\text{body}}(t_k) - H\big(\psi_{\text{body}}(t_k)\big)\Big) = \begin{cases} 1 & \text{if } \theta_{\text{body}}(t_k) > H\big(\psi_{\text{body}}(t_k)\big) \quad \text{(Unobstructed LoS)} \\ 0 & \text{if } \theta_{\text{body}}(t_k) \le H\big(\psi_{\text{body}}(t_k)\big) \quad \text{(Terrain Occluded)} \end{cases}$$
+$$
+V_{\text{body}}(t_k) = \Theta\Big(\theta_{\text{body}}(t_k) - H\big(\psi_{\text{body}}(t_k)\big)\Big) = \begin{cases} 1 & \text{if } \theta_{\text{body}}(t_k) > H\big(\psi_{\text{body}}(t_k)\big) \quad \text{(Unobstructed LoS)} \\ 0 & \text{if } \theta_{\text{body}}(t_k) \le H\big(\psi_{\text{body}}(t_k)\big) \quad \text{(Terrain Occluded)} \end{cases}
+$$
 
 3. **Time-Integrated Visibility Scores ($S_{\text{sun}}, S_{\text{earth}}$):**
    Integrating $V_{\text{body}}(t_k)$ over all $K$ timesteps yields the percentage of total mission duration with direct solar illumination and direct Earth communication:
 
-$$S_{\text{sun}} = \frac{100}{K} \sum_{k=1}^{K} V_{\odot}(t_k), \qquad S_{\text{earth}} = \frac{100}{K} \sum_{k=1}^{K} V_{\oplus}(t_k)$$
+$$
+S_{\text{sun}} = \frac{100}{K} \sum_{k=1}^{K} V_{\odot}(t_k), \qquad S_{\text{earth}} = \frac{100}{K} \sum_{k=1}^{K} V_{\oplus}(t_k)
+$$
 
 ---
 
@@ -309,46 +316,68 @@ $$S_{\text{sun}} = \frac{100}{K} \sum_{k=1}^{K} V_{\odot}(t_k), \qquad S_{\text{
 Implemented in `scores_calculator.py`, the **Scientific Accessibility Score** ($S_{\text{science}} \in [0, 100]$) measures the cumulative, distance-weighted scientific value of all **Sites of Scientific Interest (SSIs)** reachable within the rover's maximum traverse radius $R_{\max}$ (in kilometers).
 
 1. **3D `cKDTree` Ball Range Query:**
-   All $N_{\text{SSI}}$ cataloged scientific targets are converted into 3D LCLF vectors $\mathbf{q}_j \in \mathbb{R}^3$ and indexed in a `scipy.spatial.cKDTree`. Each target $j$ carries an intrinsic scientific priority weight $V_j > 0$ (based on volatile/water-ice potential, PSR proximity, or geologic significance).
-   Given a candidate landing site at $\mathbf{p}_i \in \mathbb{R}^3$ and maximum rover surface range $R_{\max}$, the code queries `tree.query_ball_point(p_i, d_chord(R_max))` to retrieve the reachable target set:
+   All $N_{\text{SSI}}$ cataloged scientific targets are converted into 3D LCLF vectors $\mathbf{q_j} \in \mathbb{R}^3$ and indexed in a `scipy.spatial.cKDTree`. Each target $j$ carries an intrinsic scientific priority weight $V_j > 0$ (based on volatile/water-ice potential, PSR proximity, or geologic significance).
+   Given a candidate landing site at $\mathbf{p_i} \in \mathbb{R}^3$ and maximum rover surface range $R_{\max}$, the code queries `tree.query_ball_point(p_i, d_chord(R_max))` to retrieve the reachable target set:
 
-$$\mathcal{N}_i(R_{\max}) = \left\{ j \in \{1, \dots, N_{\text{SSI}}\} \;\middle|\; d_{\text{surface}}(\mathbf{p}_i, \mathbf{q}_j) \le R_{\max} \right\}$$
+$$
+\mathcal{N}_i(R_{\max}) = \left\lbrace j \in \lbrace 1, \dots, N_{\text{SSI}} \rbrace \mid d_{\text{surface}}(\mathbf{p_i}, \mathbf{q_j}) \le R_{\max} \right\rbrace
+$$
 
 2. **Linear Distance-Decayed Utility Accumulation:**
-   Because rover energy consumption, wheel wear, and mission risk scale with traverse distance, targets located closer to the landing site contribute higher effective utility. For each reachable target $j \in \mathcal{N}_i(R_{\max})$ at surface geodesic distance $d_{ij} = d_{\text{surface}}(\mathbf{p}_i, \mathbf{q}_j)$, the distance-decayed raw scientific utility $U_i$ is:
+   Because rover energy consumption, wheel wear, and mission risk scale with traverse distance, targets located closer to the landing site contribute higher effective utility. For each reachable target $j \in \mathcal{N}_i(R_{\max})$ at surface geodesic distance $d_{ij} = d_{\text{surface}}(\mathbf{p_i}, \mathbf{q_j})$, the distance-decayed raw scientific utility $U_i$ is:
 
-$$U_i = \sum_{j \in \mathcal{N}_i(R_{\max})} V_j \left(1 - \frac{d_{ij}}{R_{\max}}\right)$$
+$$
+U_i = \sum_{j \in \mathcal{N}_i(R_{\max})} V_j \left(1 - \frac{d_{ij}}{R_{\max}}\right)
+$$
 
    Targets at the exact touchdown point ($d_{ij} = 0$) retain $100\%$ of their intrinsic value $V_j$, decaying linearly to $0$ at the maximum range boundary ($d_{ij} = R_{\max}$).
 
 3. **Convex Quadratic Max-Scaling ($S_{\text{science}}$):**
-   Let $U_{\max} = \max_{m \in \{1..M\}} U_m$ be the highest raw scientific utility achieved across all $M$ candidate landing sites for the current $R_{\max}$. To create strong selective contrast that rewards elite scientific hubs (sites situated inside dense clusters of high-value targets) over isolated mediocre sites, raw utilities are mapped to $[0, 100]$ via a convex quadratic transformation:
+   Let $U_{\max} = \max_{m \in \lbrace 1, \dots, M \rbrace} U_m$ be the highest raw scientific utility achieved across all $M$ candidate landing sites for the current $R_{\max}$. To create strong selective contrast that rewards elite scientific hubs (sites situated inside dense clusters of high-value targets) over isolated mediocre sites, raw utilities are mapped to $[0, 100]$ via a convex quadratic transformation:
 
-$$S_{\text{science}, i} = 100 \times \left(\frac{U_i}{U_{\max}}\right)^2$$
+$$
+S_{\text{science}, i} = 100 \times \left(\frac{U_i}{U_{\max}}\right)^2
+$$
 
 ---
 
 ### 3.7 Rover Traverse Optimization & Lambertian Hillshade Rendering
 
 #### Prize-Collecting Orienteering Route Solver (`solve_best_rover_route`)
-When a user inspects a specific landing site, `scores_calculator.py` plans an optimal multi-stop rover excursion starting at the lander $v_0 = \mathbf{p}_{\text{site}}$ and visiting an ordered sequence of reachable SSIs $\pi = (v_0, v_1, \dots, v_L)$ subject to the total traverse range budget $R_{\max}$. Mathematically, this is the **Prize-Collecting Orienteering Problem (PCOP)**:
+When a user inspects a specific landing site, `scores_calculator.py` plans an optimal multi-stop rover excursion starting at the lander $v_0 = \mathbf{p_{\text{site}}}$ and visiting an ordered sequence of reachable SSIs $\pi = (v_0, v_1, \dots, v_L)$ subject to the total traverse range budget $R_{\max}$. Mathematically, this is the **Prize-Collecting Orienteering Problem (PCOP)**:
 
-$$\max_{\pi = (v_0, v_1, \dots, v_L)} \sum_{k=1}^{L} V_{v_k} \quad \text{subject to} \quad \sum_{k=1}^{L} d_{\text{surface}}(v_{k-1}, v_k) \le R_{\max}$$
+$$
+\max_{\pi = (v_0, v_1, \dots, v_L)} \sum_{k=1}^{L} V_{v_k} \quad \text{subject to} \quad \sum_{k=1}^{L} d_{\text{surface}}(v_{k-1}, v_k) \le R_{\max}
+$$
 
 The solver uses a greedy marginal-efficiency heuristic: from the current rover position $v_{\text{curr}}$ with remaining distance budget $B_{\text{rem}}$, it evaluates all unvisited candidate targets $j \in \mathcal{N}(R_{\max}) \setminus \pi$ satisfying $d_{\text{surface}}(v_{\text{curr}}, j) \le B_{\text{rem}}$ and selects the target maximizing scientific reward per distance cost:
 
-$$v_{\text{next}} = \arg\max_{j \notin \pi,\; d(v_{\text{curr}}, j) \le B_{\text{rem}}} \frac{V_j}{\big(d_{\text{surface}}(v_{\text{curr}}, j) + \epsilon\big)^\beta}$$
+$$
+v_{\text{next}} = \arg\max_{j \notin \pi, d(v_{\text{curr}}, j) \le B_{\text{rem}}} \frac{V_j}{\big(d_{\text{surface}}(v_{\text{curr}}, j) + \epsilon\big)^\beta}
+$$
 
 updating $B_{\text{rem}} \leftarrow B_{\text{rem}} - d_{\text{surface}}(v_{\text{curr}}, v_{\text{next}})$ until no further targets can be reached within the budget.
 
 #### Lambertian Hillshade Reflectance Mathematics (`render_route_map.py`)
 To generate a visual 2D traverse map in memory, `render_route_map.py` extracts the local DEM window bounding the lander and reachable SSIs, and computes a shaded relief surface using **Lambert's Cosine Law** (`matplotlib.colors.LightSource`).
 Given synthetic illumination azimuth $\psi_L = 315^\circ$ (North-West) and altitude angle $\theta_L = 45^\circ$ (zenith angle $Z_L = 90^\circ - \theta_L$), and local DEM partial derivatives $\left(\frac{\partial z}{\partial x}, \frac{\partial z}{\partial y}\right)$:
-- The local surface slope angle in radians is $\theta_{\text{slope}} = \arctan\left(z_{\text{factor}}\sqrt{\left(\frac{\partial z}{\partial x}\right)^2 + \left(\frac{\partial z}{\partial y}\right)^2}\right)$.
-- The local down-slope aspect angle is $\psi_{\text{aspect}} = \operatorname{atan2}\left(-\frac{\partial z}{\partial y},\; -\frac{\partial z}{\partial x}\right)$.
+- The local surface slope angle in radians is:
+
+$$
+\theta_{\text{slope}} = \arctan\left(z_{\text{factor}}\sqrt{\left(\frac{\partial z}{\partial x}\right)^2 + \left(\frac{\partial z}{\partial y}\right)^2}\right)
+$$
+
+- The local down-slope aspect angle is:
+
+$$
+\psi_{\text{aspect}} = \text{atan2}\left(-\frac{\partial z}{\partial y}, -\frac{\partial z}{\partial x}\right)
+$$
+
 - The normalized Lambertian reflectance intensity $I(x, y) \in [0, 1]$ is the dot product between the unit surface normal $\hat{\mathbf{n}}$ and unit light vector $\hat{\mathbf{s}}$:
 
-$$I(x, y) = \hat{\mathbf{n}}(x,y) \cdot \hat{\mathbf{s}} = \sin(\theta_L)\cos(\theta_{\text{slope}}) + \cos(\theta_L)\sin(\theta_{\text{slope}})\cos(\psi_L - \psi_{\text{aspect}})$$
+$$
+I(x, y) = \hat{\mathbf{n}}(x,y) \cdot \hat{\mathbf{s}} = \sin(\theta_L)\cos(\theta_{\text{slope}}) + \cos(\theta_L)\sin(\theta_{\text{slope}})\cos(\psi_L - \psi_{\text{aspect}})
+$$
 
 The renderer composites the hillshade intensity with a hypsometric elevation colormap, overlays elevation contour lines, plots the SSI markers scaled by $V_j$ and the ordered traverse polyline $\pi$, and writes the figure directly into an in-memory `io.BytesIO` PNG stream.
 
@@ -359,7 +388,9 @@ The renderer composites the hillshade intensity with a hypsometric elevation col
 #### Composite MCDM Score ($S_{\text{total}}$)
 For every candidate site $i$, the four normalized sub-scores—Landing Safety ($S_{\text{safety}, i}$), Scientific Accessibility ($S_{\text{science}, i}$), Solar Illumination ($S_{\text{sun}, i}$), and Earth Communication ($S_{\text{earth}, i}$)—each span $[0, 100]$. Given user-defined preference weights $\mathbf{w} = [w_{\text{safety}}, w_{\text{science}}, w_{\text{sun}}, w_{\text{earth}}]^T \in [0, 1]^4$, `scores_calculator.py` computes the composite **Total Mission Score** $S_{\text{total}, i} \in [0, 100]$ via Normalized Weighted Linear Combination (WLC):
 
-$$S_{\text{total}, i} = \frac{w_{\text{safety}} S_{\text{safety}, i} + w_{\text{science}} S_{\text{science}, i} + w_{\text{sun}} S_{\text{sun}, i} + w_{\text{earth}} S_{\text{earth}, i}}{w_{\text{safety}} + w_{\text{science}} + w_{\text{sun}} + w_{\text{earth}}}$$
+$$
+S_{\text{total}, i} = \frac{w_{\text{safety}} S_{\text{safety}, i} + w_{\text{science}} S_{\text{science}, i} + w_{\text{sun}} S_{\text{sun}, i} + w_{\text{earth}} S_{\text{earth}, i}}{w_{\text{safety}} + w_{\text{science}} + w_{\text{sun}} + w_{\text{earth}}}
+$$
 
 *(If $\sum w_k = 0$, the denominator defaults to equal weights $w_k = 0.25$ to prevent division by zero).*
 
@@ -376,16 +407,24 @@ When a user submits a natural-language mission description in the UI, `GeminiAPI
 In `frontend/src/lib/Moon.svelte`, the lunar globe is rendered in **Three.js** (`THREE.SphereGeometry`) using NASA LRO textures:
 1. **Vertex Displacement Mapping:**
    Each vertex on the unit sphere with normal $\hat{\mathbf{n}}$ and UV coordinates $(u, v)$ samples the 8-bit LOLA elevation map `ldem_3_8bit.jpg` ($D(u,v) \in [0, 1]$) and shifts its radial position along the surface normal:
-   $$\mathbf{v}_{\text{displaced}} = \big(R_{\text{globe}} + s_{\text{disp}} \cdot (D(u, v) - b_{\text{disp}})\big) \hat{\mathbf{n}}$$
+
+$$
+\mathbf{v_{\text{displaced}}} = \big(R_{\text{globe}} + s_{\text{disp}} \cdot (D(u, v) - b_{\text{disp}})\big) \hat{\mathbf{n}}
+$$
+
    while mapping `lroc_color_poles_1k.jpg` to diffuse surface albedo.
 2. **Selenographic Marker Placement & Inverse Raycasting:**
-   Note that Three.js uses a right-handed Y-up coordinate system (`Y` = North Pole, `X/Z` = Equatorial Plane). Converting $(\phi, \lambda)$ to 3D globe coordinates $(x_{\text{gl}}, y_{\text{gl}}, z_{\text{gl}})$ at radius $r$ follows:
+   Three.js uses a right-handed Y-up coordinate system (`Y` = North Pole, `X/Z` = Equatorial Plane). Converting $(\phi, \lambda)$ to 3D globe coordinates $(x_{\text{gl}}, y_{\text{gl}}, z_{\text{gl}})$ at radius $r$ follows:
 
-$$y_{\text{gl}} = r \sin(\phi), \qquad x_{\text{gl}} = r \cos(\phi)\cos(\lambda), \qquad z_{\text{gl}} = -r \cos(\phi)\sin(\lambda)$$
+$$
+y_{\text{gl}} = r \sin(\phi), \qquad x_{\text{gl}} = r \cos(\phi)\cos(\lambda), \qquad z_{\text{gl}} = -r \cos(\phi)\sin(\lambda)
+$$
 
-   When a user clicks on the 3D globe, `THREE.Raycaster` computes the intersection point $\mathbf{p}_{\text{hit}} = (x_{\text{gl}}, y_{\text{gl}}, z_{\text{gl}})$ on the mesh and inverts the transformation to recover selenographic $(\phi, \lambda)$:
+   When a user clicks on the 3D globe, `THREE.Raycaster` computes the intersection point $\mathbf{p_{\text{hit}}} = (x_{\text{gl}}, y_{\text{gl}}, z_{\text{gl}})$ on the mesh and inverts the transformation to recover selenographic $(\phi, \lambda)$:
 
-$$\phi = \arcsin\left(\frac{y_{\text{gl}}}{\|\mathbf{p}_{\text{hit}}\|_2}\right) \times \frac{180^\circ}{\pi}, \qquad \lambda = \operatorname{atan2}(-z_{\text{gl}},\, x_{\text{gl}}) \times \frac{180^\circ}{\pi}$$
+$$
+\phi = \arcsin\left(\frac{y_{\text{gl}}}{\lVert \mathbf{p_{\text{hit}}} \rVert_2}\right) \times \frac{180^\circ}{\pi}, \qquad \lambda = \text{atan2}(-z_{\text{gl}}, x_{\text{gl}}) \times \frac{180^\circ}{\pi}
+$$
 
    which is then dispatched to `/api/site/inspect`.
 
@@ -417,7 +456,7 @@ The baseline datasets in `processed_data/` are generated by four offline data-en
 
 | File Path | Detailed Responsibilities |
 | :--- | :--- |
-| `api/main.py` | FastAPI application server. Configures CORS middleware, initializes cached site/horizon datasets, and defines the REST API endpoints for batch MCDM ranking, single-point inspection, hillshaded route map streaming, and Gemini AI parameter generation. |
+| `api/main.py` | FastAPI application server. Configures CORS middleware, initializes cached site/horizon datasets, and defines the REST API endpoints for batch MCDM ranking, single-point inspection, hillshaded route map streaming, and Gemini AI recommendations. |
 | `api/render.yaml` | Infrastructure-as-Code Blueprint for deploying the Python FastAPI service on Render. |
 | `api/requirements.txt` | Specifies backend Python package dependencies (`fastapi`, `uvicorn`, `numpy`, `scipy`, `matplotlib`, `gdal`, `requests`, `google-genai`, `pydantic`). |
 | `api/analysis/inspect_point.py` | Opens remote NASA LOLA DEMs via GDAL `/vsicurl/`, projects $(\phi, \lambda)$ to raster pixel offsets, computes local and regional finite-difference slopes and elevation roughness, invokes 360° horizon ray-casting, and appends new records to `user_inspected_sites.csv` and `user_horizon_profiles.csv`. |
@@ -439,7 +478,7 @@ The baseline datasets in `processed_data/` are generated by four offline data-en
 | `frontend/src/lib/Moon.svelte` | Three.js WebGL component rendering the 3D lunar globe with `lroc_color_poles_1k.jpg` albedo and `ldem_3_8bit.jpg` vertex displacement, orbital camera controls, 3D site pins, and click-to-inspect raycasting. |
 | `frontend/src/lib/ParameterSelector.svelte` | Interactive control panel for adjusting the 4 MCDM weights, lander hardware tolerances ($S_{\max}, \sigma_{\max}, R_{\max}$), preset lander profiles, and the Gemini AI mission prompt input. |
 | `frontend/src/lib/SiteSelector.svelte` | Displays the live-sorted leaderboard of ranked landing sites and provides manual $(\text{lat}, \text{lon})$ coordinate entry for custom site inspection. |
-| `frontend/src/lib/SiteCard.svelte` | Telemetry modal displaying a selected site's 12-element terrain metrics, sub-score breakdowns, reachable SSIs, and the dynamically streamed 2D hillshaded rover traverse map. |
+| `frontend/src/lib/SiteCard.svelte` | Telemetry modal displaying a selected site's 12-element terrain metrics, score bars, reachable SSIs, and the dynamically streamed 2D hillshaded rover traverse map. |
 | `frontend/src/lib/TimeSlider.svelte` | Interactive mission timeline control for selecting mission start/end dates and stepping through ephemeris epochs. |
 | `frontend/src/shared/config.svelte.js` | Centralizes API endpoint base URLs and environment configuration. |
 | `frontend/src/shared/inputs.svelte.js` | Reactive Svelte 5 `$state` store holding user MCDM weights, hardware limits, and mission epoch timestamps. |
@@ -458,10 +497,10 @@ The baseline datasets in `processed_data/` are generated by four offline data-en
 | `1` | `lat` | `float` | Degrees | Selenographic latitude $\phi \in [-90^\circ, 90^\circ]$ |
 | `2` | `lon` | `float` | Degrees | Selenographic longitude $\lambda \in [-180^\circ, 180^\circ]$ |
 | `3` | `elevation_m` | `float` | Meters | Surface elevation $z_0$ relative to the $1,737.4\text{ km}$ reference sphere |
-| `4` | `local_mean_slope_deg` | `float` | Degrees | Mean slope $\bar{\theta}_{\text{local}}$ within the local touchdown window |
+| `4` | `local_mean_slope_deg` | `float` | Degrees | Mean slope $\bar{\theta_{\text{local}}}$ within the local touchdown window |
 | `5` | `local_max_slope_deg` | `float` | Degrees | Maximum slope $\theta_{\max, \text{local}}$ within the local touchdown window |
 | `6` | `local_roughness_m` | `float` | Meters | Elevation standard deviation $\sigma_{\text{local}}$ within the local window |
-| `7` | `regional_mean_slope_deg` | `float` | Degrees | Mean slope $\bar{\theta}_{\text{regional}}$ across the regional dispersion window |
+| `7` | `regional_mean_slope_deg` | `float` | Degrees | Mean slope $\bar{\theta_{\text{regional}}}$ across the regional dispersion window |
 | `8` | `regional_max_slope_deg` | `float` | Degrees | Maximum slope $\theta_{\max, \text{regional}}$ across the regional dispersion window |
 | `9` | `regional_roughness_m` | `float` | Meters | Elevation standard deviation $\sigma_{\text{regional}}$ across the regional window |
 | `10` | `is_custom` | `bool` | — | `True` if dynamically inspected by a user via `/vsicurl/`, `False` if baseline grid |
@@ -469,7 +508,7 @@ The baseline datasets in `processed_data/` are generated by four offline data-en
 
 ### 360° Horizon Profile Schema (`landing_site_horizons.csv`, `user_horizon_profiles.csv`)
 * **`site_id`**: Matches the `site_id` in the site metadata table.
-* **`az_0` ... `az_359`**: 360 floating-point columns storing the maximum spherical horizon elevation angle $H(\psi)$ (in degrees) for each $1^\circ$ azimuth bin $\psi \in \{0^\circ, 1^\circ, \dots, 359^\circ\}$.
+* **`az_0` ... `az_359`**: 360 floating-point columns storing the maximum spherical horizon elevation angle $H(\psi)$ (in degrees) for each $1^\circ$ azimuth bin $\psi \in \lbrace 0^\circ, 1^\circ, \dots, 359^\circ \rbrace$.
 
 ---
 
@@ -481,35 +520,3 @@ The baseline datasets in `processed_data/` are generated by four offline data-en
 | `POST` | `/api/site/inspect` | `{"lat": float, "lon": float}` | Streams NASA DEM via GDAL `/vsicurl/`, computes 12-element terrain vector & 360° horizon profile, caches to CSV, and returns full scored site object. |
 | `GET` | `/api/site/route-map` | `lat` (float), `lon` (float), `rover_range_km` (float) | `image/png` binary stream (`StreamingResponse`) of the hillshaded DEM and optimal rover traverse route. |
 | `POST` | `/api/gemini/recommend` | `{"prompt": str}` | JSON containing Gemini-synthesized MCDM weights, hardware tolerances, and mission rationale. |
-
----
-
-## 9. Installation, Environment Variables & Local Setup
-
-### Prerequisites
-* **Python 3.10+** with system **GDAL** libraries installed:
-  * **Ubuntu / WSL2:** `sudo apt-get update && sudo apt-get install -y libgdal-dev gdal-bin`
-  * **macOS (Homebrew):** `brew install gdal`
-  * **Conda:** `conda install -c conda-forge gdal`
-* **Node.js 18+** and `npm`
-* **Environment Variables:**
-  * `GEMINI_API_KEY`: Google Gemini API key required by `api/analysis/GeminiAPICaller.py`.
-
-### 1. Run the FastAPI Backend (`api/`)
-```bash
-cd api
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -r requirements.txt
-
-export GEMINI_API_KEY="your_gemini_api_key_here"
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-### 2. Run the Svelte 5 + Three.js Frontend (`frontend/`)
-```bash
-cd frontend
-npm install
-npm run dev
-```
-Open `http://localhost:5173` in your browser, or access the live production deployment directly at [https://lunar.isaacbarker.net](https://lunar.isaacbarker.net) alongside the [Lunar Landing Navigator Presentation](./Lunar%20Landing%20Navigator%20(1).pptx) tutorial deck.
